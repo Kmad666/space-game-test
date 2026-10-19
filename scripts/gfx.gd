@@ -90,7 +90,7 @@ static func build(host: Node) -> void:
 	items.append(["reticle", Rect2(-40, -40, 80, 80), _reticle])
 	items.append(["blob", Rect2(-130, -130, 260, 260), _blob])
 
-	var raider := Neon.mirror([Vector2(17, 0), Vector2(3, -4), Vector2(9, -13), Vector2(-3, -10), Vector2(-11, -15), Vector2(-8, -4), Vector2(-12, 0)], 1.4)
+	var raider := Neon.mirror([Vector2(18, 0), Vector2(6, -3), Vector2(12, -10), Vector2(2, -7), Vector2(-4, -14), Vector2(-10, -13), Vector2(-6, -5), Vector2(-12, -3), Vector2(-11, 0)], 1.35)
 	items.append(["raider", _poly_bounds(raider).grow(18.0), _raider.bind(raider)])
 	var bomber := Neon.mirror([Vector2(22, 0), Vector2(14, -8), Vector2(4, -10), Vector2(0, -20), Vector2(-14, -22), Vector2(-10, -10), Vector2(-20, -8), Vector2(-18, 0)], 1.75)
 	items.append(["bomber", _poly_bounds(bomber).grow(18.0), _bomber.bind(bomber)])
