@@ -54,6 +54,7 @@ func _ready() -> void:
 	orbit_phase = randf() * TAU
 	_refresh_tier()
 	hp = max_hp()
+	_build_visuals()
 
 
 # ---------------------------------------------------------------- stats
@@ -110,6 +111,7 @@ func on_upgraded(key: String) -> bool:
 	if tier != old:
 		hp = max_hp()
 		trails.clear()
+		_build_visuals()
 		return true
 	return false
 
@@ -147,7 +149,7 @@ func _process(delta: float) -> void:
 	_mine(delta)
 	_deposit(delta)
 	_combat(delta)
-	queue_redraw()
+	_update_visuals()
 
 
 func _player_desired() -> Vector2:
@@ -170,7 +172,7 @@ func _update_trails() -> void:
 		trails.clear()
 		for i in engines.size():
 			trails.append(PackedVector2Array())
-	var max_pts := 22 if is_player else 14
+	var max_pts := (22 if is_player else 14) / (2 if Game.inst.low_quality else 1)
 	for i in engines.size():
 		var tr: PackedVector2Array = trails[i]
 		tr.append(to_global(engines[i]))
@@ -290,7 +292,8 @@ func die() -> void:
 	if is_player:
 		g.shake = 14.0
 		g.hud.push_message("SHIP DESTROYED — CARGO LOST", Color(1, 0.35, 0.35), 2.5)
-	queue_redraw()
+	if _vis != null:
+		_vis.visible = false
 
 
 func respawn() -> void:
@@ -303,6 +306,8 @@ func respawn() -> void:
 	rotation = dir.angle()
 	vel = dir * 100.0
 	trails.clear()
+	if _vis != null:
+		_vis.visible = true
 	g.fx.ring(position, color, 60.0, 0.6, 3.0)
 	ai_state = "mine"
 	ai_ast = null
@@ -380,102 +385,83 @@ func _pick_asteroid():
 	return best
 
 
-# ---------------------------------------------------------------- drawing
-func _draw() -> void:
-	if dead:
-		return
-	var g := Game.inst
-	var font := ThemeDB.fallback_font
-	draw_set_transform_matrix(get_global_transform().affine_inverse())
-	for tr in trails:
-		_draw_trail(tr)
-	if mining_target != null and is_instance_valid(mining_target):
-		_draw_beam(mining_target)
-	if depositing:
-		Neon.line(self, position, g.station.position, Color(0.85, 0.6, 1.0, 0.25), 1.5, 0.6)
-	var cap := cargo_cap()
-	var ring_r := hit_radius + 10.0
-	if cargo > 0.0:
-		var f := cargo / cap
-		draw_arc(position, ring_r, -PI * 0.5, -PI * 0.5 + TAU * f, 32, Color(0.8, 0.5, 1.0, 0.75), 2.5, true)
-		draw_arc(position, ring_r, -PI * 0.5, -PI * 0.5 + TAU * f, 32, Color(0.8, 0.5, 1.0, 0.15), 7.0, true)
-	if not is_player:
-		draw_string(font, position + Vector2(-50, -hit_radius - 16), callsign, HORIZONTAL_ALIGNMENT_CENTER, 100, 11, Color(color, 0.65))
-	draw_set_transform_matrix(Transform2D.IDENTITY)
+# ---------------------------------------------------------------- visuals
+# Hulls are pre-baked sprites (see Gfx). Per frame we only move a few sprites:
+# engine flames, strobing nav lights and the hit flash tint.
+var _vis: Node2D
+var _glow: Sprite2D
+var _core: Sprite2D
+var _flames := []
+var _nav := []
 
+
+func _build_visuals() -> void:
+	if not Gfx.ready:
+		return
+	if _vis != null:
+		_vis.queue_free()
+	_vis = Node2D.new()
+	add_child(_vis)
+	var d: Dictionary = tier_data(tier)
+	_flames.clear()
+	_nav.clear()
+	for e in d.engines:
+		var f := Gfx.sprite("flame")
+		f.position = e
+		_vis.add_child(f)
+		_flames.append(f)
+	_glow = Gfx.sprite("ship%d_glow" % tier, color)
+	_vis.add_child(_glow)
+	_core = Gfx.sprite("ship%d_core" % tier)
+	_vis.add_child(_core)
+	for i in 2:
+		var n := Gfx.sprite("dot", Color(1, 0.3, 0.35) if i == 0 else Color(0.35, 1, 0.5))
+		n.position = d.lights[i]
+		n.scale = Vector2.ONE * 0.3
+		_vis.add_child(n)
+		_nav.append(n)
+	_vis.visible = not dead
+	_update_visuals()
+
+
+func _update_visuals() -> void:
+	if _vis == null:
+		return
+	var d: Dictionary = tier_data(tier)
+	var s: float = d.s
+	var white := Color(1, 1, 1)
+	for i in _flames.size():
+		var f: Sprite2D = _flames[i]
+		var flick := 0.8 + 0.2 * sin(t * 45.0 + i * 1.7)
+		var flen := (5.0 + 18.0 * thrust) * s * flick
+		f.scale = Vector2(flen / 32.0, 0.4 * s)
+		Gfx.tint(f, color.lerp(white, 0.35))
 	var flash := hit_flash * 2.0
 	if invuln > 0.0 and int(t * 12.0) % 2 == 0:
 		flash = 0.6
-	draw_ship(self, tier, color, t, thrust, flash)
-	if hit_flash > 0.0:
-		Neon.ring(self, Vector2.ZERO, hit_radius + 7.0, Color(color, hit_flash * 2.5), 1.5)
+	Gfx.tint(_glow, color.lerp(white, clampf(flash, 0.0, 1.0)))
+	var blink := 0.35 + 0.65 * maxf(0.0, sin(t * 5.0))
+	Gfx.tint(_nav[0], Color(1, 0.3, 0.35, blink))
+	Gfx.tint(_nav[1], Color(0.35, 1, 0.5, blink))
 
 
-func _draw_trail(tr: PackedVector2Array) -> void:
-	var n := tr.size()
-	if n < 2:
-		return
-	var base_w := 2.0 + tier * 0.6
-	for i in range(1, n):
-		var a := float(i) / float(n)
-		var c := color.lerp(Color.WHITE, a * 0.35)
-		draw_line(tr[i - 1], tr[i], Color(c, a * 0.12), base_w * 3.5 * a, true)
-		draw_line(tr[i - 1], tr[i], Color(c, a * 0.55), base_w * a, true)
-
-
-func _draw_beam(a) -> void:
-	var start := to_global(tier_data(tier).nose)
-	var dir: Vector2 = (start - a.position).normalized()
-	var end: Vector2 = a.position + dir * a.cur_radius() * 0.75
-	var c: Color = a.color
-	var pts := PackedVector2Array([start])
-	var seg := 5
-	var perp := (end - start).orthogonal().normalized()
-	for i in range(1, seg):
-		var f := float(i) / seg
-		pts.append(start.lerp(end, f) + perp * randf_range(-5.0, 5.0))
-	pts.append(end)
-	draw_polyline(pts, Color(c, 0.12), 9.0, true)
-	draw_polyline(pts, Color(c, 0.6), 2.5, true)
-	draw_polyline(pts, Color(1, 1, 1, 0.8), 1.0, true)
-	Neon.dot(self, end, 4.0 + randf() * 2.0, c, 0.9)
-
-
-## Shared hull renderer (also used for the title screen line-up).
-static func draw_ship(ci: CanvasItem, tr: int, col: Color, time: float, thr: float, flash: float = 0.0) -> void:
+## Draws a hull from the atlas (title screen line-up). ci must use Gfx.premult.
+static func blit_ship(ci: CanvasItem, tr: int, col: Color, time: float, thr: float, pos: Vector2, rot: float, sc: float) -> void:
 	var d: Dictionary = tier_data(tr)
 	var s: float = d.s
-	var hull: PackedVector2Array = d.hull
-	var white := Color(1, 1, 1)
-	# engine flames
+	ci.draw_set_transform(pos, rot, Vector2.ONE * sc)
 	for i in d.engines.size():
 		var e: Vector2 = d.engines[i]
-		var flick := 0.8 + 0.2 * sin(time * 45.0 + i * 1.7)
-		var flen := (5.0 + 18.0 * thr) * s * flick
-		var fw := 2.8 * s
-		ci.draw_colored_polygon(PackedVector2Array([e + Vector2(0, -fw * 1.6), e + Vector2(-flen * 1.5, 0), e + Vector2(0, fw * 1.6)]), Color(col, 0.18))
-		ci.draw_colored_polygon(PackedVector2Array([e + Vector2(0, -fw), e + Vector2(-flen, 0), e + Vector2(0, fw)]), Color(col.lerp(white, 0.4), 0.7))
-		ci.draw_colored_polygon(PackedVector2Array([e + Vector2(0, -fw * 0.45), e + Vector2(-flen * 0.55, 0), e + Vector2(0, fw * 0.45)]), Color(1, 1, 1, 0.9))
-	# hull fill
-	if d.fill_ok:
-		ci.draw_colored_polygon(hull, Color(col.r * 0.1 + 0.02, col.g * 0.1 + 0.02, col.b * 0.14 + 0.04, 0.94))
-	# panel lines
-	for ln in d.lines:
-		ci.draw_line(ln[0], ln[1], Color(col, 0.18), 4.0, true)
-		ci.draw_line(ln[0], ln[1], Color(col, 0.55), 1.2, true)
-	var oc := col.lerp(white, clampf(flash, 0.0, 1.0))
-	Neon.outline(ci, hull, oc, 1.6 + s * 0.5, 1.0)
-	# cockpit
-	var cp: PackedVector2Array = d.cockpit
-	ci.draw_colored_polygon(cp, Color(col.lerp(white, 0.65), 0.85))
-	Neon.outline(ci, cp, Color(col.lerp(white, 0.5), 0.9), 1.0, 0.5)
-	# engine glow
-	for e in d.engines:
-		Neon.dot(ci, e, 2.4 * s, col.lerp(white, 0.3), 0.8 + 0.2 * thr)
-	# nav lights: port red, starboard green, strobing
+		var flen := (5.0 + 18.0 * thr) * s * (0.8 + 0.2 * sin(time * 45.0 + i * 1.7))
+		ci.draw_set_transform(pos + (e * sc).rotated(rot), rot, Vector2(flen / 32.0, 0.4 * s) * sc)
+		Gfx.blit(ci, "flame", Vector2.ZERO, 1.0, col.lerp(Color.WHITE, 0.35))
+	ci.draw_set_transform(pos, rot, Vector2.ONE * sc)
+	Gfx.blit(ci, "ship%d_glow" % tr, Vector2.ZERO, 1.0, col)
+	Gfx.blit(ci, "ship%d_core" % tr, Vector2.ZERO, 1.0, Color.WHITE)
 	var blink := 0.35 + 0.65 * maxf(0.0, sin(time * 5.0))
-	Neon.dot(ci, d.lights[0], 1.8, Color(1, 0.3, 0.35), blink)
-	Neon.dot(ci, d.lights[1], 1.8, Color(0.35, 1, 0.5), blink)
+	Gfx.blit(ci, "dot", d.lights[0], 0.3, Color(1, 0.3, 0.35, blink))
+	Gfx.blit(ci, "dot", d.lights[1], 0.3, Color(0.35, 1, 0.5, blink))
+	ci.draw_set_transform(Vector2.ZERO)
 
 
 static func tier_data(tr: int) -> Dictionary:

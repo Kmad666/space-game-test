@@ -14,11 +14,17 @@ var t := 0.0
 var hover := -1
 var btn_flash := {}
 var font: Font
+var _title_ships: TitleShips
+var _redraw_t := 0.0
 
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	font = ThemeDB.fallback_font
+	_title_ships = TitleShips.new()
+	_title_ships.hud = self
+	_title_ships.material = Gfx.premult
+	add_child(_title_ships)
 
 
 func push_message(txt: String, col: Color, dur: float = 2.5) -> void:
@@ -54,7 +60,14 @@ func _process(delta: float) -> void:
 		for j in rects.size():
 			if rects[j].has_point(mp):
 				hover = j
-	queue_redraw()
+	_title_ships.visible = g.state == "title"
+	if g.state == "title":
+		_title_ships.queue_redraw()
+	# 30 Hz is plenty for the interface
+	_redraw_t -= delta
+	if _redraw_t <= 0.0:
+		_redraw_t = 1.0 / 30.0
+		queue_redraw()
 
 
 func _input(event: InputEvent) -> void:
@@ -148,6 +161,8 @@ func _draw() -> void:
 		_txt(Vector2(0, size.y * 0.45 + 44), "click or press P to resume", 18, Color(1, 1, 1, 0.75), HORIZONTAL_ALIGNMENT_CENTER, size.x)
 	if g.state == "over":
 		_draw_over()
+	var q := "LOW-SPEC" if g.low_quality else "HIGH"
+	_txt(Vector2(size.x - 194, 212), "%d FPS · Q quality: %s" % [int(round(g.fps_now)), q], 11, Color(1, 1, 1, 0.4), HORIZONTAL_ALIGNMENT_RIGHT, 180)
 
 
 func _draw_status() -> void:
@@ -343,23 +358,20 @@ func _draw_title() -> void:
 	var y := size.y * 0.2
 	_txt(Vector2(0, y), "AEGIS RUN", 84, CYAN, HORIZONTAL_ALIGNMENT_CENTER, size.x, true)
 	_txt(Vector2(0, y + 40), "MINE  ·  HAUL  ·  DEFEND", 20, Color(1, 1, 1, 0.7), HORIZONTAL_ALIGNMENT_CENTER, size.x)
-	# ship line-up
+	# ship line-up (drawn by the TitleShips child from the sprite atlas)
 	var tiers := Ship.TIER_NAMES.size()
 	var spacing := minf(190.0, (size.x - 80.0) / tiers)
 	var x0 := cx - spacing * (tiers - 1) * 0.5
 	var sy := y + 140
 	for i in tiers:
 		var p := Vector2(x0 + i * spacing, sy)
-		draw_set_transform(p, -PI * 0.5 + 0.08 * sin(t * 1.3 + i), Vector2.ONE * 1.0)
-		Ship.draw_ship(self, i, Color(0.3, 0.92, 1.0), t, 0.6 + 0.4 * sin(t * 2.0 + i), 0.0)
-		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 		_txt(Vector2(p.x - 80, sy + 96), Ship.TIER_NAMES[i], 14, Color(CYAN, 0.85), HORIZONTAL_ALIGNMENT_CENTER, 160)
 	var lines := [
 		"Your ship follows the mouse. Fly near crystal asteroids to mine ore (gold ones are worth 3x).",
 		"Haul ore back into the ring around Aegis Station — the station grows with every delivery.",
 		"Raiders and rogue meteors will attack. Your missiles lock on and fire automatically.",
 		"Escort bots fight and mine beside you. Spend credits on upgrades to grow your ship.",
-		"Upgrades: click the bar or press 1-7    ·    Hold SPACE to brake    ·    P pause    ·    F fullscreen",
+		"Upgrades: click the bar or press 1-7   ·   SPACE brake   ·   P pause   ·   F fullscreen   ·   Q quality",
 	]
 	var ly := sy + 150
 	for l in lines:
@@ -389,3 +401,17 @@ func _draw_over() -> void:
 		_txt(Vector2(size.x * 0.5 - 220, sy), s[1], 20, CYAN, HORIZONTAL_ALIGNMENT_RIGHT, 440)
 		sy += 30
 	_txt(Vector2(0, sy + 40), "CLICK TO RELAUNCH", 28, Color(GOLD, 0.6 + 0.4 * sin(t * 4.0)), HORIZONTAL_ALIGNMENT_CENTER, size.x, true)
+
+
+## Title-screen hull line-up, drawn from the sprite atlas (premultiplied material).
+class TitleShips extends Node2D:
+	var hud
+
+	func _draw() -> void:
+		var sz: Vector2 = hud.size
+		var tiers := Ship.TIER_NAMES.size()
+		var spacing := minf(190.0, (sz.x - 80.0) / tiers)
+		var x0: float = sz.x * 0.5 - spacing * (tiers - 1) * 0.5
+		var sy: float = sz.y * 0.2 + 140.0
+		for i in tiers:
+			Ship.blit_ship(self, i, Color(0.3, 0.92, 1.0), hud.t, 0.6 + 0.4 * sin(hud.t * 2.0 + i), Vector2(x0 + i * spacing, sy), -PI * 0.5 + 0.08 * sin(hud.t * 1.3 + i), 1.0)

@@ -12,6 +12,9 @@ var life := 1.8
 func _ready() -> void:
 	z_index = 6
 	rotation = vel.angle()
+	var sp := Gfx.sprite("bolt", col)
+	sp.scale = Vector2(1.0 + size * 0.1, size / 3.0)
+	add_child(sp)
 
 
 func _process(delta: float) -> void:
@@ -35,10 +38,3 @@ func _process(delta: float) -> void:
 			g.fx.burst(position, col, 6, 100.0, 1.6, 0.3)
 			queue_free()
 			return
-
-
-func _draw() -> void:
-	var L := 10.0 + size * 2.0
-	draw_line(Vector2(-L, 0), Vector2(0, 0), Color(col, 0.15), size * 4.0, true)
-	draw_line(Vector2(-L, 0), Vector2(0, 0), Color(col, 0.85), size, true)
-	draw_line(Vector2(-L * 0.6, 0), Vector2(0, 0), Color(1, 1, 1, 0.9), size * 0.4, true)

@@ -2,6 +2,7 @@ class_name Station
 extends Node2D
 ## Aegis Station. Grows a level each time enough ore is delivered: bigger
 ## rings, more modules, solar arrays, defense turrets and a new escort bot.
+## Its rings are baked into textures once per level and simply rotated.
 
 const MAX_LEVEL := 12
 
@@ -19,11 +20,38 @@ var dead := false
 var turret_cd := []
 var turret_aim := []
 
+var _dock: Sprite2D
+var _assembly: Sprite2D
+var _mid: Sprite2D
+var _hub: Sprite2D
+var _core: Sprite2D
+var _dyn: StationDyn
+var _baking := false
+var _baked_level := -1
+
 
 func _ready() -> void:
 	z_index = 1
 	_apply_level()
 	hp = max_hp
+	_dock = Gfx.sprite("dashring", Color(0.4, 0.9, 1.0, 0.2))
+	add_child(_dock)
+	_assembly = _premult_sprite()
+	_mid = _premult_sprite()
+	_hub = _premult_sprite()
+	_core = Gfx.sprite("dot", Color(0.85, 0.75, 1.0))
+	add_child(_core)
+	_dyn = StationDyn.new()
+	_dyn.st = self
+	add_child(_dyn)
+	_rebake()
+
+
+func _premult_sprite() -> Sprite2D:
+	var s := Sprite2D.new()
+	s.material = Gfx.premult
+	add_child(s)
+	return s
 
 
 func need() -> float:
@@ -65,6 +93,8 @@ func deposit(amount: float) -> void:
 		hp = max_hp
 		level_pulse = 1.0
 		Game.inst.on_station_level_up(level)
+	if _baked_level != level:
+		_rebake()
 
 
 func damage(amount: float, _by_player: bool = false) -> void:
@@ -92,8 +122,8 @@ func _process(delta: float) -> void:
 	hit_flash = maxf(0.0, hit_flash - delta)
 	deposit_glow = maxf(0.0, deposit_glow - delta * 2.0)
 	level_pulse = maxf(0.0, level_pulse - delta * 0.7)
+	_update_visuals()
 	if dead:
-		queue_redraw()
 		return
 	hp = minf(max_hp, hp + (1.5 + 0.6 * level) * delta)
 	var g := Game.inst
@@ -108,101 +138,123 @@ func _process(delta: float) -> void:
 				g.fx.beam(tp, e.position, Color(0.55, 0.95, 1.0), 0.14, 2.5)
 				g.fx.burst(e.position, Color(0.6, 0.95, 1.0), 5, 90.0, 1.6, 0.3)
 				e.damage(8.0 + 3.0 * level, false)
-	queue_redraw()
 
 
-func _draw() -> void:
-	var R := radius
-	var cyan := Color(0.4, 0.9, 1.0)
-	var white := Color(1, 1, 1)
+func _update_visuals() -> void:
 	var hurt := 1.0 - hp / max_hp
-	var ring_col := cyan.lerp(Color(1, 0.35, 0.3), clampf(hurt * 1.3 - 0.3, 0.0, 0.8))
+	var tint := Color(1, 1, 1).lerp(Color(1, 0.45, 0.4), clampf(hurt * 1.3 - 0.3, 0.0, 0.8))
+	_assembly.rotation = t * 0.12
+	_mid.rotation = -t * 0.3
+	_hub.rotation = t * 0.2
+	_dock.rotation = t * 0.08
+	_dock.scale = Vector2.ONE * (dock_radius() / 128.0)
+	Gfx.tint(_dock, Color(0.4, 0.9, 1.0, 0.16 + deposit_glow * 0.35))
+	_assembly.modulate = tint
+	var pulse := 0.85 + 0.15 * sin(t * 3.0) + deposit_glow * 0.4
+	_core.scale = Vector2.ONE * (radius * 0.11 / 6.0) * pulse
+	_dyn.queue_redraw()
 
-	# docking zone
-	var dr := dock_radius()
-	var segs := 48
-	var dock_a := 0.14 + deposit_glow * 0.35
-	for i in segs:
-		if i % 2 == 0:
-			var a0 := TAU * i / segs + t * 0.08
-			draw_arc(Vector2.ZERO, dr, a0, a0 + TAU / segs * 0.9, 4, Color(cyan, dock_a), 2.0, true)
-	draw_circle(Vector2.ZERO, dr, Color(cyan, 0.015 + deposit_glow * 0.03))
 
-	# level-up shockwave
-	if level_pulse > 0.0:
-		Neon.ring(self, Vector2.ZERO, R + (1.0 - level_pulse) * 400.0, Color(cyan, level_pulse), 3.0)
+# ---------------------------------------------------------------- baking
+func _rebake() -> void:
+	if _baking:
+		return
+	_baking = true
+	while _baked_level != level:
+		var lvl := level
+		var R := radius
+		var arrays_len := 40.0 + 8.0 * lvl
+		var ext := int(ceil(R + arrays_len + 24.0))
+		var sz := Vector2i(ext * 2, ext * 2)
+		var c := Vector2(ext, ext)
+		var tex_a: Texture2D = await Gfx.bake(self, sz, func(ci): _draw_assembly(ci, c, R, lvl))
+		var mid_ext := int(ceil(R * 0.62 + 16.0))
+		var tex_m: Texture2D = await Gfx.bake(self, Vector2i(mid_ext * 2, mid_ext * 2), func(ci): _draw_mid(ci, Vector2(mid_ext, mid_ext), R, lvl))
+		var hub_ext := int(ceil(R * 0.34 + 18.0))
+		var tex_h: Texture2D = await Gfx.bake(self, Vector2i(hub_ext * 2, hub_ext * 2), func(ci): _draw_hub(ci, Vector2(hub_ext, hub_ext), R, lvl))
+		_assembly.texture = tex_a
+		_mid.texture = tex_m
+		_hub.texture = tex_h
+		_baked_level = lvl
+	_baking = false
 
-	# solar arrays (level 3+)
+
+static func _draw_assembly(ci: CanvasItem, o: Vector2, R: float, lvl: int) -> void:
+	var cyan := Color(0.4, 0.9, 1.0)
 	var arrays := 0
-	if level >= 3:
+	if lvl >= 3:
 		arrays = 2
-	if level >= 6:
+	if lvl >= 6:
 		arrays = 4
-	if level >= 9:
+	if lvl >= 9:
 		arrays = 6
 	for i in arrays:
-		var a := TAU * i / arrays + t * 0.05 + 0.4
+		var a := TAU * i / arrays + 0.4
 		var dir := Vector2.RIGHT.rotated(a)
 		var perp := dir.orthogonal()
-		var L := 40.0 + 8.0 * level
-		var W := 14.0 + level * 0.8
-		var base := dir * (R + 6.0)
+		var L := 40.0 + 8.0 * lvl
+		var W := 14.0 + lvl * 0.8
+		var base := o + dir * (R + 6.0)
 		var quad := PackedVector2Array([base + perp * W * 0.5, base + dir * L + perp * W * 0.5, base + dir * L - perp * W * 0.5, base - perp * W * 0.5])
-		draw_colored_polygon(quad, Color(0.05, 0.12, 0.3, 0.9))
+		ci.draw_colored_polygon(quad, Color(0.05, 0.12, 0.3, 0.9))
 		for k in range(1, 5):
 			var f := float(k) / 5.0
-			draw_line(base + dir * L * f + perp * W * 0.5, base + dir * L * f - perp * W * 0.5, Color(0.3, 0.55, 1.0, 0.45), 1.0, true)
-		draw_line(base, base + dir * L, Color(0.3, 0.55, 1.0, 0.4), 1.0, true)
-		Neon.outline(self, quad, Color(0.4, 0.65, 1.0, 0.85), 1.2, 0.5)
-
-	# outer ring + modules
-	var nmod := 3 + level
-	var ring_rot := t * 0.12
-	draw_circle(Vector2.ZERO, R, Color(0.02, 0.05, 0.09, 0.6))
-	Neon.ring(self, Vector2.ZERO, R, ring_col, 3.0, 1.0, 64)
-	Neon.ring(self, Vector2.ZERO, R - 9.0, Color(ring_col, 0.35), 1.0, 0.4, 64)
+			ci.draw_line(base + dir * L * f + perp * W * 0.5, base + dir * L * f - perp * W * 0.5, Color(0.3, 0.55, 1.0, 0.45), 1.0, true)
+		ci.draw_line(base, base + dir * L, Color(0.3, 0.55, 1.0, 0.4), 1.0, true)
+		Neon.outline(ci, quad, Color(0.4, 0.65, 1.0, 0.85), 1.2, 0.5)
+	var nmod := 3 + lvl
+	ci.draw_circle(o, R, Color(0.02, 0.05, 0.09, 0.6))
+	Neon.ring(ci, o, R, cyan, 3.0, 1.0, 64)
+	Neon.ring(ci, o, R - 9.0, Color(cyan, 0.35), 1.0, 0.4, 64)
 	for i in nmod:
-		var a := TAU * i / nmod + ring_rot
+		var a := TAU * i / nmod
 		var dir := Vector2.RIGHT.rotated(a)
 		var perp := dir.orthogonal()
-		Neon.line(self, dir * R * 0.36, dir * (R - 9.0), Color(cyan, 0.35), 1.2, 0.4)
-		var c := dir * R
-		var mw := 9.0 + level * 0.6
-		var mh := 6.0 + level * 0.3
+		Neon.line(ci, o + dir * R * 0.36, o + dir * (R - 9.0), Color(cyan, 0.35), 1.2, 0.4)
+		var c := o + dir * R
+		var mw := 9.0 + lvl * 0.6
+		var mh := 6.0 + lvl * 0.3
 		var box := PackedVector2Array([c + perp * mw + dir * mh, c - perp * mw + dir * mh, c - perp * mw - dir * mh, c + perp * mw - dir * mh])
-		draw_colored_polygon(box, Color(0.03, 0.09, 0.14, 1))
-		Neon.outline(self, box, Color(ring_col, 0.95), 1.4, 0.6)
-		var blink := 0.3 + 0.7 * maxf(0.0, sin(t * 3.0 + i * 1.3))
-		Neon.dot(self, c + dir * (mh + 3.0), 1.6, Color(1, 0.85, 0.4), blink)
+		ci.draw_colored_polygon(box, Color(0.03, 0.09, 0.14, 1))
+		Neon.outline(ci, box, Color(cyan, 0.95), 1.4, 0.6)
+		Neon.dot(ci, c + dir * (mh + 3.0), 1.6, Color(1, 0.85, 0.4), 0.8)
 
-	# middle dashed ring (counter-rotating)
+
+static func _draw_mid(ci: CanvasItem, o: Vector2, R: float, lvl: int) -> void:
 	var mid := R * 0.62
-	var mseg := 12 + level * 2
+	var mseg := 12 + lvl * 2
 	for i in mseg:
-		var a0 := TAU * i / mseg - t * 0.3
-		Neon.arc(self, Vector2.ZERO, mid, a0, a0 + TAU / mseg * 0.6, Color(0.6, 0.85, 1.0, 0.7), 2.0, 0.5, 4)
+		var a0 := TAU * i / mseg
+		Neon.arc(ci, o, mid, a0, a0 + TAU / mseg * 0.6, Color(0.6, 0.85, 1.0, 0.7), 2.0, 0.5, 4)
 
-	# hub
+
+static func _draw_hub(ci: CanvasItem, o: Vector2, R: float, lvl: int) -> void:
 	var hub := PackedVector2Array()
-	var hsides := 6 if level < 5 else 8
+	var hsides := 6 if lvl < 5 else 8
 	for i in hsides:
-		hub.append(Vector2.RIGHT.rotated(TAU * i / hsides + t * 0.2) * R * 0.34)
-	draw_colored_polygon(hub, Color(0.03, 0.08, 0.16, 1))
-	Neon.outline(self, hub, Color(0.7, 0.95, 1.0), 2.0, 0.8)
+		hub.append(o + Vector2.RIGHT.rotated(TAU * i / hsides) * R * 0.34)
+	ci.draw_colored_polygon(hub, Color(0.03, 0.08, 0.16, 1))
+	Neon.outline(ci, hub, Color(0.7, 0.95, 1.0), 2.0, 0.8)
 
-	# core
-	var pulse := 0.85 + 0.15 * sin(t * 3.0) + deposit_glow * 0.4
-	Neon.dot(self, Vector2.ZERO, R * 0.11 * pulse, Color(0.75, 0.6, 1.0).lerp(white, 0.2), 1.0)
-	draw_circle(Vector2.ZERO, R * 0.24, Color(0.75, 0.6, 1.0, 0.05 + deposit_glow * 0.12))
 
-	# turrets
-	for i in turret_count():
-		var tp := turret_pos(i) - position
-		var a: float = turret_aim[i]
-		var tri := PackedVector2Array([tp + Vector2(11, 0).rotated(a), tp + Vector2(-6, -6).rotated(a), tp + Vector2(-6, 6).rotated(a)])
-		draw_colored_polygon(tri, Color(0.05, 0.12, 0.18, 1))
-		Neon.outline(self, tri, white.lerp(cyan, 0.4), 1.4, 0.8)
+## Cheap per-frame bits: turrets, shield flash and the level-up shockwave.
+class StationDyn extends Node2D:
+	var st
 
-	# shield flash
-	if hit_flash > 0.0:
-		Neon.ring(self, Vector2.ZERO, R + 16.0, Color(0.5, 0.85, 1.0, hit_flash * 2.5), 2.5, 1.0, 64)
+	func _draw() -> void:
+		var R: float = st.radius
+		var cyan := Color(0.4, 0.9, 1.0)
+		if st.level_pulse > 0.0:
+			var lp: float = st.level_pulse
+			draw_arc(Vector2.ZERO, R + (1.0 - lp) * 400.0, 0, TAU, 48, Color(cyan, lp * 0.25), 8.0)
+			draw_arc(Vector2.ZERO, R + (1.0 - lp) * 400.0, 0, TAU, 48, Color(cyan, lp), 2.5)
+		for i in st.turret_count():
+			var tp: Vector2 = st.turret_pos(i) - st.position
+			var a: float = st.turret_aim[i]
+			var tri := PackedVector2Array([tp + Vector2(11, 0).rotated(a), tp + Vector2(-6, -6).rotated(a), tp + Vector2(-6, 6).rotated(a)])
+			draw_colored_polygon(tri, Color(0.05, 0.12, 0.18, 1))
+			tri.append(tri[0])
+			draw_polyline(tri, Color(0.75, 0.95, 1.0), 1.6)
+		if st.hit_flash > 0.0:
+			draw_arc(Vector2.ZERO, R + 16.0, 0, TAU, 48, Color(0.5, 0.85, 1.0, st.hit_flash * 0.8), 8.0)
+			draw_arc(Vector2.ZERO, R + 16.0, 0, TAU, 48, Color(0.5, 0.85, 1.0, st.hit_flash * 2.5), 2.5)

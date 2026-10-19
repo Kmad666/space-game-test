@@ -8,7 +8,6 @@ var hp := 20.0
 var max_hp := 20.0
 var speed := 160.0
 var color := Color(1, 0.25, 0.3)
-var shape := PackedVector2Array()
 var vel := Vector2.ZERO
 var target = null
 var retarget_t := 0.0
@@ -22,7 +21,8 @@ var flash := 0.0
 var orbit_sign := 1.0
 var wave := 1
 var fx_t := 0.0
-var fill_ok := true
+var _body: Sprite2D
+var _flames := []
 
 
 func setup(k: String, w: int, rng: RandomNumberGenerator) -> void:
@@ -39,15 +39,17 @@ func setup(k: String, w: int, rng: RandomNumberGenerator) -> void:
 			color = Color(1, 0.25, 0.32)
 			hit_radius = 17.0
 			reward = 15.0
-			shape = Neon.mirror([Vector2(17, 0), Vector2(3, -4), Vector2(9, -13), Vector2(-3, -10), Vector2(-11, -15), Vector2(-8, -4), Vector2(-12, 0)], 1.4)
-			scale = Vector2.ONE
+			_add_flame(Vector2(-16, 0), 0.55)
+			_body = Gfx.sprite("raider")
 		"bomber":
 			hp = 110.0 * mult
 			speed = 70.0
 			color = Color(1, 0.2, 0.65)
 			hit_radius = 32.0
 			reward = 45.0
-			shape = Neon.mirror([Vector2(22, 0), Vector2(14, -8), Vector2(4, -10), Vector2(0, -20), Vector2(-14, -22), Vector2(-10, -10), Vector2(-20, -8), Vector2(-18, 0)], 1.75)
+			_add_flame(Vector2(-32, -11), 0.5)
+			_add_flame(Vector2(-32, 11), 0.5)
+			_body = Gfx.sprite("bomber")
 		"meteor":
 			var r := rng.randf_range(22.0, 36.0)
 			hp = 40.0 * mult * (r / 29.0)
@@ -55,11 +57,20 @@ func setup(k: String, w: int, rng: RandomNumberGenerator) -> void:
 			color = Color(1, 0.5, 0.15)
 			hit_radius = r
 			reward = 10.0
-			shape = Neon.rock(rng, r, rng.randi_range(9, 12), 0.3)
 			spin = rng.randf_range(-1.5, 1.5)
+			_body = Gfx.sprite("meteor%d" % rng.randi_range(0, 5))
+			_body.scale = Vector2.ONE * (r / 30.0)
 	max_hp = hp
-	fill_ok = not Geometry2D.triangulate_polygon(shape).is_empty()
+	add_child(_body)
 	z_index = 4
+
+
+func _add_flame(at: Vector2, sc: float) -> void:
+	var f := Gfx.sprite("flame", Color(1, 0.6, 0.35) if kind == "raider" else Color(1, 0.5, 0.8))
+	f.position = at
+	f.scale = Vector2(sc, sc * 0.6)
+	add_child(f)
+	_flames.append(f)
 
 
 func _process(delta: float) -> void:
@@ -82,12 +93,24 @@ func _process(delta: float) -> void:
 		return
 	fx_t -= delta
 	if fx_t <= 0.0:
-		fx_t = 0.035 if kind == "meteor" else 0.06
+		fx_t = (0.035 if kind == "meteor" else 0.06) * (2.5 if g.low_quality else 1.0)
 		var back := -vel.normalized()
 		var off := hit_radius * (0.7 if kind == "meteor" else 0.9)
 		var c := color if kind != "meteor" else Color(1, randf_range(0.35, 0.75), 0.1)
 		g.fx.spark(position + back * off + Vector2(randf_range(-4, 4), randf_range(-4, 4)), back * randf_range(30, 90) + vel * 0.3, c, randf_range(1.5, 3.2) if kind == "meteor" else 1.6, randf_range(0.3, 0.7))
-	queue_redraw()
+	_update_visuals()
+
+
+func _update_visuals() -> void:
+	var white := Color(1, 1, 1)
+	if kind == "meteor":
+		var fl := 0.9 + 0.15 * sin(t * 20.0)
+		Gfx.tint(_body, Color(fl, fl, fl).lerp(white * 1.6, flash * 6.0))
+	else:
+		Gfx.tint(_body, white.lerp(Color(1.8, 1.8, 1.8), flash * 6.0))
+		for i in _flames.size():
+			var f: Sprite2D = _flames[i]
+			f.scale.x = (0.45 + 0.15 * sin(t * 38.0 + i)) * (1.0 if kind == "raider" else 0.9)
 
 
 func _raider(delta: float) -> void:
@@ -185,60 +208,3 @@ func remove(killed: bool) -> void:
 		pass
 	g.enemies.erase(self)
 	queue_free()
-
-
-func _draw() -> void:
-	var white := Color(1, 1, 1)
-	var c := color.lerp(white, flash * 5.0)
-	match kind:
-		"meteor":
-			var hot := (vel.normalized() * hit_radius * 0.5).rotated(-rotation)
-			draw_circle(hot, hit_radius * 1.3, Color(1, 0.45, 0.1, 0.08))
-			if fill_ok:
-				draw_colored_polygon(shape, Color(0.13, 0.06, 0.03, 1))
-			for i in 3:
-				var a := TAU * i / 3.0 + 0.4
-				draw_line(Vector2.ZERO, Vector2.RIGHT.rotated(a) * hit_radius * 0.6, Color(1, 0.55, 0.15, 0.45), 1.5, true)
-			Neon.outline(self, shape, c, 2.0, 0.9 + 0.2 * sin(t * 20.0))
-		"raider":
-			if fill_ok:
-				draw_colored_polygon(shape, Color(0.14, 0.02, 0.04, 0.95))
-			var fl := 6.0 + 4.0 * sin(t * 40.0)
-			draw_colored_polygon(PackedVector2Array([Vector2(-16, -4), Vector2(-16 - fl * 1.3, 0), Vector2(-16, 4)]), Color(1, 0.6, 0.3, 0.8))
-			Neon.outline(self, shape, c, 1.8, 1.0)
-			Neon.dot(self, Vector2(7, -3.2), 1.8, Color(1, 0.9, 0.4), 0.9)
-			Neon.dot(self, Vector2(7, 3.2), 1.8, Color(1, 0.9, 0.4), 0.9)
-		"bomber":
-			if fill_ok:
-				draw_colored_polygon(shape, Color(0.13, 0.02, 0.09, 0.95))
-			for s in [-1.0, 1.0]:
-				var e := Vector2(-32, 11.0 * s)
-				var fl := 8.0 + 5.0 * sin(t * 35.0 + s)
-				draw_colored_polygon(PackedVector2Array([e + Vector2(0, -3), e + Vector2(-fl, 0), e + Vector2(0, 3)]), Color(1, 0.5, 0.8, 0.8))
-			Neon.outline(self, shape, c, 2.2, 1.0)
-			var hex := PackedVector2Array()
-			for i in 6:
-				hex.append(Vector2.RIGHT.rotated(TAU * i / 6.0 + t) * 10.0)
-			Neon.outline(self, hex, Color(1, 0.6, 0.9), 1.4, 0.8)
-			Neon.dot(self, Vector2.ZERO, 3.0 + sin(t * 6.0), Color(1, 0.4, 0.8), 1.0)
-
-	# un-rotated overlays: health bar + lock reticle
-	draw_set_transform(Vector2.ZERO, -rotation)
-	if hp < max_hp:
-		var w := hit_radius * 2.0
-		var y := -hit_radius - 12.0
-		draw_rect(Rect2(-w * 0.5, y, w, 3), Color(0, 0, 0, 0.6))
-		draw_rect(Rect2(-w * 0.5, y, w * hp / max_hp, 3), Color(c, 0.9))
-	var g := Game.inst
-	if g.player != null and g.player.lock_target == self:
-		var r := hit_radius + 10.0
-		var rot := t * 2.0
-		for i in 4:
-			var a := rot + TAU * i / 4.0
-			Neon.arc(self, Vector2.ZERO, r, a - 0.35, a + 0.35, Color(0.4, 0.95, 1.0), 1.6, 0.8, 6)
-		var tri_d := r + 6.0
-		for i in 4:
-			var a := TAU * i / 4.0 + PI / 4.0
-			var p := Vector2.RIGHT.rotated(a) * tri_d
-			draw_line(p, p * 0.86, Color(0.4, 0.95, 1.0, 0.9), 1.5, true)
-	draw_set_transform(Vector2.ZERO, 0.0)

@@ -16,6 +16,7 @@ var t := 0.0
 
 func _ready() -> void:
 	z_index = 6
+	add_child(Gfx.sprite("missile", col.lerp(Color.WHITE, 0.35)))
 
 
 func _process(delta: float) -> void:
@@ -38,31 +39,16 @@ func _process(delta: float) -> void:
 	position += vel * delta
 	rotation = vel.angle()
 	trail.append(position)
-	if trail.size() > 16:
+	if trail.size() > (8 if g.low_quality else 16):
 		trail.remove_at(0)
 	if target != null and position.distance_to(target.position) < target.hit_radius + 8.0:
 		target.damage(dmg, by_player)
 		_explode()
 		return
-	queue_redraw()
 
 
 func _explode() -> void:
 	var g := Game.inst
-	g.fx.burst(position, col.lerp(Color(1, 0.8, 0.4), 0.5), 9, 150.0, 2.0, 0.35)
+	g.fx.burst(position, col.lerp(Color(1, 0.8, 0.4), 0.5), 4 if g.low_quality else 9, 150.0, 2.0, 0.35)
 	g.fx.ring(position, Color(1, 0.85, 0.5), 22.0, 0.25, 2.0)
 	queue_free()
-
-
-func _draw() -> void:
-	draw_set_transform_matrix(get_global_transform().affine_inverse())
-	var n := trail.size()
-	for i in range(1, n):
-		var a := float(i) / n
-		draw_line(trail[i - 1], trail[i], Color(col, a * 0.12), 7.0 * a, true)
-		draw_line(trail[i - 1], trail[i], Color(col.lerp(Color.WHITE, 0.5), a * 0.6), 2.0 * a, true)
-	draw_set_transform_matrix(Transform2D.IDENTITY)
-	var body := PackedVector2Array([Vector2(8, 0), Vector2(-4, -2.6), Vector2(-2, 0), Vector2(-4, 2.6)])
-	draw_colored_polygon(body, Color(1, 1, 1, 0.95))
-	Neon.outline(self, body, col, 1.0, 0.8)
-	Neon.dot(self, Vector2(-4, 0), 2.2, Color(1, 0.8, 0.45), 1.0)

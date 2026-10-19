@@ -53,6 +53,21 @@ var cam_zoom := 1.0
 var station_hit_t := 0.0
 var over_t := 0.0
 var autopilot := false
+var low_quality := false
+var quality_auto := true
+var _fps_frames := 0
+var _fps_time := 0.0
+var _slow_windows := 0
+var fps_now := 60.0
+var trails: TrailLayer
+var overlay: Overlay
+var bench := false
+var _bench_frames := 0
+var _bench_us := 0
+var _bench_last := 0
+var _bench_draws := 0.0
+var _bench_prims := 0.0
+var _bench_proc := 0.0
 var _autoguard := false
 var shot_dir := ""
 var shot_times := []
@@ -66,6 +81,9 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	rng.randomize()
 	var uargs := OS.get_cmdline_user_args()
+	if "--low" in uargs:
+		low_quality = true
+		quality_auto = false
 	if "--autotest" in uargs:
 		autopilot = true
 		skip_title = true
@@ -73,11 +91,18 @@ func _ready() -> void:
 	for a in uargs:
 		if a.begins_with("--shots="):
 			shot_dir = a.substr(8)
-			shot_times = [20.0, 58.0, 112.0, 170.0]
+			shot_times = [58.0, 112.0]
+		if a == "--bench":
+			bench = true
+			autopilot = true
+			skip_title = true
+			_autoguard = true
 		if a == "--titleshot":
 			title_shot = true
 		if a == "--killstation":
 			kill_test = true
+
+	await Gfx.build(self)
 
 	var bg := CanvasLayer.new()
 	bg.layer = -10
@@ -93,9 +118,13 @@ func _ready() -> void:
 	world.add_child(station)
 	layer_enemies = _layer()
 	layer_ships = _layer()
+	trails = TrailLayer.new()
+	world.add_child(trails)
 	layer_proj = _layer()
 	fx = FX.new()
 	world.add_child(fx)
+	overlay = Overlay.new()
+	world.add_child(overlay)
 
 	camera = Camera2D.new()
 	add_child(camera)
@@ -118,7 +147,11 @@ func _ready() -> void:
 	add_child(hl)
 	hud = HUD.new()
 	hl.add_child(hud)
+	if low_quality:
+		get_tree().root.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
 
+	if bench:
+		_bench_setup()
 	if skip_title:
 		start_game()
 	else:
@@ -343,6 +376,9 @@ func buy_upgrade(i: int) -> void:
 
 # ---------------------------------------------------------------- loop
 func _process(delta: float) -> void:
+	if hud == null:
+		return
+	_track_fps(delta)
 	if state == "playing" or state == "dying":
 		time_played += delta
 		station_hit_t = maxf(0.0, station_hit_t - delta)
@@ -367,6 +403,8 @@ func _process(delta: float) -> void:
 
 	if autopilot and state == "playing":
 		_autotest_tick()
+	if bench:
+		_bench_tick()
 	real_t += delta
 	if title_shot and real_t > 1.5:
 		_snap("title")
@@ -395,8 +433,14 @@ func _process(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if hud == null:
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		var k: int = event.keycode
+		if k == KEY_Q:
+			quality_auto = false
+			set_low_quality(not low_quality)
+			return
 		if k == KEY_F:
 			if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN:
 				DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
@@ -423,6 +467,36 @@ func _unhandled_input(event: InputEvent) -> void:
 				get_tree().paused = false
 			"over":
 				restart()
+
+
+# ---------------------------------------------------------------- quality
+func _track_fps(delta: float) -> void:
+	_fps_frames += 1
+	_fps_time += delta
+	if _fps_time < 2.0:
+		return
+	fps_now = _fps_frames / _fps_time
+	_fps_frames = 0
+	_fps_time = 0.0
+	if not quality_auto or low_quality or state != "playing" or time_played < 3.0:
+		return
+	if fps_now < 45.0:
+		_slow_windows += 1
+		if _slow_windows >= 2:
+			set_low_quality(true)
+			hud.push_message("LOW-SPEC MODE ON — press Q to switch back", Color(1, 0.85, 0.4), 4.0)
+	else:
+		_slow_windows = 0
+
+
+func set_low_quality(on: bool) -> void:
+	low_quality = on
+	var root := get_tree().root
+	root.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT if on else Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+	if not on:
+		hud.push_message("HIGH QUALITY", Color(0.6, 0.95, 1.0), 1.5)
+	elif not quality_auto:
+		hud.push_message("LOW-SPEC MODE", Color(1, 0.85, 0.4), 1.5)
 
 
 func restart() -> void:
@@ -452,3 +526,33 @@ func _snap(name: String) -> void:
 	var img := get_viewport().get_texture().get_image()
 	img.save_png("%s/%s.png" % [dir, name])
 	print("saved ", name)
+
+
+func _bench_setup() -> void:
+	for i in 4:
+		station.deposit(station.need())
+	credits = 600.0
+	wave = 4
+	raid_dir = Vector2.RIGHT
+	spawn_wave()
+	spawn_wave()
+	for e in enemies:
+		e.position *= 0.3
+	player.position = Vector2(350, 0)
+
+
+func _bench_tick() -> void:
+	_bench_frames += 1
+	var now := Time.get_ticks_usec()
+	if _bench_frames > 120:
+		_bench_us += now - _bench_last
+		_bench_draws += Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)
+		_bench_prims += Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)
+		_bench_proc += Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	_bench_last = now
+	if _bench_frames == 720:
+		var n := 600.0
+		print("BENCH frame_ms=%.2f fps=%.1f draws=%.0f prims=%.0f process_ms=%.2f enemies=%d parts=%d" % [
+			_bench_us / n / 1000.0, 1000000.0 / (_bench_us / n), _bench_draws / n, _bench_prims / n, _bench_proc / n,
+			enemies.size(), fx.parts.size()])
+		get_tree().quit()

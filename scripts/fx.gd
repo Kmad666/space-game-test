@@ -14,17 +14,29 @@ var texts := []
 var beams := []
 
 
+var _dots: FXDots
+var _sp := PackedVector2Array()
+var _sc_glow := PackedColorArray()
+var _sc_core := PackedColorArray()
+
+
 func _ready() -> void:
 	z_index = 8
+	_dots = FXDots.new()
+	_dots.fx = self
+	_dots.material = Gfx.premult
+	add_child(_dots)
 
 
 func spark(pos: Vector2, vel: Vector2, color: Color, size: float = 2.0, life: float = 0.5, drag: float = 2.0) -> void:
-	if parts.size() >= MAX_PARTS:
+	if parts.size() >= (MAX_PARTS / 3 if Game.inst.low_quality else MAX_PARTS):
 		return
 	parts.append([pos, vel, life, life, color, size, drag, null])
 
 
 func burst(pos: Vector2, color: Color, count: int, speed: float, size: float = 2.0, life: float = 0.6) -> void:
+	if Game.inst.low_quality:
+		count = maxi(1, count / 2)
 	for i in count:
 		var v := Vector2.RIGHT.rotated(randf() * TAU) * speed * randf_range(0.25, 1.0)
 		spark(pos, v, color, size * randf_range(0.6, 1.3), life * randf_range(0.6, 1.2), 2.5)
@@ -96,36 +108,55 @@ func _process(delta: float) -> void:
 	for tx in texts:
 		tx[0] += Vector2(0, -28.0 * delta)
 	queue_redraw()
+	_dots.queue_redraw()
 
 
 func _draw() -> void:
+	# fast-moving particles: two batched multiline commands
+	_sp.clear()
+	_sc_glow.clear()
+	_sc_core.clear()
 	for p in parts:
+		var v: Vector2 = p[1]
+		if v.length_squared() <= 3600.0:
+			continue
 		var a: float = p[2] / p[3]
 		var c: Color = p[4]
-		var s: float = p[5]
-		var v: Vector2 = p[1]
-		if v.length() > 60.0:
-			var tail: Vector2 = p[0] - v * 0.035
-			draw_line(tail, p[0], Color(c, a * 0.25), s * 2.6, true)
-			draw_line(tail, p[0], Color(c.lerp(Color.WHITE, 0.3), a), s, true)
-		else:
-			draw_circle(p[0], s * 2.2, Color(c, a * 0.15))
-			draw_circle(p[0], s * 0.8, Color(c.lerp(Color.WHITE, 0.3), a))
+		_sp.append(p[0] - v * 0.035)
+		_sp.append(p[0])
+		_sc_glow.append(Color(c, a * 0.25))
+		_sc_core.append(Color(c.lerp(Color.WHITE, 0.3), a))
+	if _sp.size() > 0:
+		draw_multiline_colors(_sp, _sc_glow, 5.0)
+		draw_multiline_colors(_sp, _sc_core, 1.8)
 	for r in rings:
 		var f: float = 1.0 - r[2] / r[3]
 		var rad: float = r[1] * (0.2 + 0.8 * sqrt(f))
 		var c: Color = r[4]
-		draw_arc(r[0], rad, 0, TAU, 40, Color(c, (1.0 - f) * 0.25), r[5] * 3.5, true)
-		draw_arc(r[0], rad, 0, TAU, 40, Color(c, 1.0 - f), r[5], true)
+		draw_arc(r[0], rad, 0, TAU, 32, Color(c, (1.0 - f) * 0.25), r[5] * 3.5)
+		draw_arc(r[0], rad, 0, TAU, 32, Color(c, 1.0 - f), r[5])
 	for b in beams:
 		var a: float = b[3] / b[4]
 		var c: Color = b[2]
-		draw_line(b[0], b[1], Color(c, a * 0.18), b[5] * 5.0, true)
-		draw_line(b[0], b[1], Color(c, a), b[5], true)
-		draw_line(b[0], b[1], Color(1, 1, 1, a), b[5] * 0.4, true)
+		draw_line(b[0], b[1], Color(c, a * 0.18), b[5] * 5.0)
+		draw_line(b[0], b[1], Color(c.lerp(Color.WHITE, 0.4), a), b[5])
 	var font := ThemeDB.fallback_font
 	for tx in texts:
 		var a: float = clampf(tx[3] / tx[4] * 1.6, 0.0, 1.0)
 		var c: Color = tx[2]
 		draw_string_outline(font, tx[0] - Vector2(80, 0), tx[1], HORIZONTAL_ALIGNMENT_CENTER, 160, tx[5], 6, Color(0, 0, 0, a * 0.7))
 		draw_string(font, tx[0] - Vector2(80, 0), tx[1], HORIZONTAL_ALIGNMENT_CENTER, 160, tx[5], Color(c, a))
+
+
+## Slow particles drawn as glow sprites from the atlas — all one texture, so they batch.
+class FXDots extends Node2D:
+	var fx
+
+	func _draw() -> void:
+		for p in fx.parts:
+			var v: Vector2 = p[1]
+			if v.length_squared() > 3600.0:
+				continue
+			var a: float = p[2] / p[3]
+			var c: Color = p[4]
+			Gfx.blit(self, "dot", p[0], p[5] * 0.22, Color(c.lerp(Color.WHITE, 0.2), a))

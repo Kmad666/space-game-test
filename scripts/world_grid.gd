@@ -23,16 +23,23 @@ func _draw() -> void:
 	var br := cam + vs * 0.5 + Vector2(STEP, STEP)
 	var W := Game.WORLD_HALF
 	var col := Color(0.25, 0.5, 0.9, 0.07)
+	var pts := PackedVector2Array()
 	var x := floorf(tl.x / STEP) * STEP
 	while x < br.x:
 		if absf(x) <= W:
-			draw_line(Vector2(x, maxf(tl.y, -W)), Vector2(x, minf(br.y, W)), col, 1.0)
+			pts.append(Vector2(x, maxf(tl.y, -W)))
+			pts.append(Vector2(x, minf(br.y, W)))
 		x += STEP
 	var y := floorf(tl.y / STEP) * STEP
 	while y < br.y:
 		if absf(y) <= W:
-			draw_line(Vector2(maxf(tl.x, -W), y), Vector2(minf(br.x, W), y), col, 1.0)
+			pts.append(Vector2(maxf(tl.x, -W), y))
+			pts.append(Vector2(minf(br.x, W), y))
 		y += STEP
+	if pts.size() > 0 and not g.low_quality:
+		draw_multiline(pts, col, 1.0)
 	# boundary
 	var rect := PackedVector2Array([Vector2(-W, -W), Vector2(W, -W), Vector2(W, W), Vector2(-W, W)])
-	Neon.outline(self, rect, Color(1, 0.3, 0.4, 0.6), 3.0, 1.2)
+	rect.append(rect[0])
+	draw_polyline(rect, Color(1, 0.3, 0.4, 0.12), 14.0)
+	draw_polyline(rect, Color(1, 0.3, 0.4, 0.7), 3.0)
