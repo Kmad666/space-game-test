@@ -1,183 +1,361 @@
 class_name Enemy
 extends Node2D
-## Raiders (fast strafing fighters), bombers (slow station-busters) and rogue
-## meteors (ram the station).
+## Hostile life.
+## Field guardians (stay home, come back after being killed):
+##   polyp   — rooted anemone in nectar blooms; spits spores, breeds mites
+##   mite    — small fast biter that swarms intruders in a bloom
+##   lurker  — translucent manta in the ice shelves; lies in wait, then lunges
+##   spitter — rooted spine turret ringing the ore veins
+## Raiders:
+##   swarm   — swarmling packs that nibble hive modules until they go dark
 
-var kind := "raider"
+var kind := "mite"
+var tier := 1
+var field = null
+var slot := -1
+var owner_polyp = null
+var mites: Array = []
 var hp := 20.0
 var max_hp := 20.0
-var speed := 160.0
-var color := Color(1, 0.25, 0.3)
-var vel := Vector2.ZERO
-var target = null
-var retarget_t := 0.0
-var fire_cd := 1.0
 var hit_radius := 13.0
-var reward := 15.0
+var speed := 150.0
+var tm := 1.0
+var mult := 1.0
+var vel := Vector2.ZERO
+var color := Gfx.C_FOE
 var dead := false
-var spin := 0.0
 var t := 0.0
 var flash := 0.0
-var orbit_sign := 1.0
-var wave := 1
-var fx_t := 0.0
+var target = null
+var think_t := 0.0
+var fire_cd := 1.0
+var spawn_cd := 4.0
+var bite_cd := 0.0
+var state := "patrol"
+var state_t := 0.0
+var home := Vector2.ZERO
+var wander := Vector2.ZERO
+var wander_t := 0.0
+var dash_dir := Vector2.ZERO
+var dash_hit := false
+var orbit := 1.0
+var reward := 1
+
 var _body: Sprite2D
-var _flames := []
+var _veins: Sprite2D
+var _parts: Array = []  # [sprite, base_rot, phase, kind]
 
 
-func setup(k: String, w: int, rng: RandomNumberGenerator) -> void:
+func setup(k: String, pos: Vector2, f, wave: int) -> void:
 	kind = k
-	wave = w
-	var mult := 1.0 + 0.22 * (w - 1)
-	orbit_sign = 1.0 if rng.randf() < 0.5 else -1.0
-	fire_cd = rng.randf_range(0.5, 1.5)
-	t = rng.randf() * 5.0
+	field = f
+	position = pos
+	home = pos
+	wander = pos
+	tier = f.tier if f != null else 1
+	tm = 1.0 if tier == 1 else 1.55
+	t = randf() * 5.0
+	orbit = 1.0 if randf() < 0.5 else -1.0
+	fire_cd = randf_range(0.6, 1.6)
+	z_index = 4
 	match kind:
-		"raider":
-			hp = 22.0 * mult
-			speed = minf(165.0 + 4.0 * w, 235.0)
-			color = Color(1, 0.25, 0.32)
-			hit_radius = 17.0
-			reward = 15.0
-			_add_flame(Vector2(-16, 0), 0.55)
-			_body = Gfx.sprite("raider")
-		"bomber":
-			hp = 110.0 * mult
+		"mite":
+			hp = 18.0 * tm
+			speed = 150.0 if tier == 1 else 172.0
+			hit_radius = 13.0
+			_body = Gfx.sprite("mite")
+		"polyp":
+			hp = 280.0 * tm
+			hit_radius = 30.0
+			reward = 3
+			for i in 7:
+				var tp := Gfx.sprite("polyp_t")
+				var a := TAU * i / 7.0
+				tp.position = Vector2.RIGHT.rotated(a) * 18.0
+				tp.rotation = a
+				add_child(tp)
+				_parts.append([tp, a, randf() * TAU, "tent"])
+			_body = Gfx.sprite("polyp")
+		"lurker":
+			hp = 130.0 * tm
 			speed = 70.0
-			color = Color(1, 0.2, 0.65)
-			hit_radius = 32.0
-			reward = 45.0
-			_add_flame(Vector2(-32, -11), 0.5)
-			_add_flame(Vector2(-32, 11), 0.5)
-			_body = Gfx.sprite("bomber")
-		"meteor":
-			var r := rng.randf_range(22.0, 36.0)
-			hp = 40.0 * mult * (r / 29.0)
-			speed = minf(95.0 + 3.0 * w, 160.0)
-			color = Color(1, 0.5, 0.15)
-			hit_radius = r
-			reward = 10.0
-			spin = rng.randf_range(-1.5, 1.5)
-			_body = Gfx.sprite("meteor%d" % rng.randi_range(0, 5))
-			_body.scale = Vector2.ONE * (r / 30.0)
+			hit_radius = 24.0
+			reward = 2
+			for sd in [-1.0, 1.0]:
+				var fn := Gfx.sprite("lurker_f")
+				fn.position = Vector2(4, 5.0 * sd)
+				fn.scale = Vector2(1, -sd)
+				add_child(fn)
+				_parts.append([fn, 0.0, 0.0, "fin%d" % int(sd)])
+			_body = Gfx.sprite("lurker")
+		"spitter":
+			hp = 150.0 * tm
+			hit_radius = 22.0
+			reward = 2
+			rotation = randf() * TAU
+			_body = Gfx.sprite("spitter")
+		"swarm":
+			mult = 1.0 + 0.08 * maxi(wave - 1, 0)
+			hp = 14.0 * mult
+			speed = 205.0
+			hit_radius = 12.0
+			color = Gfx.C_SWARM
+			for sd in [-1.0, 1.0]:
+				var w := Gfx.sprite("swarm_w")
+				var root: Vector2 = Gfx.wing_roots(Gfx.swarm_spec())[0]
+				w.position = Vector2(root.x, -root.y * sd)
+				add_child(w)
+				_parts.append([w, 0.0, randf() * TAU, "wing%d" % int(sd)])
+			_body = Gfx.sprite("swarm")
+			_veins = Gfx.sprite("swarm_v")
 	max_hp = hp
 	add_child(_body)
-	z_index = 4
+	if _veins != null:
+		add_child(_veins)
 
 
-func _add_flame(at: Vector2, sc: float) -> void:
-	var f := Gfx.sprite("flame", Color(1, 0.6, 0.35) if kind == "raider" else Color(1, 0.5, 0.8))
-	f.position = at
-	f.scale = Vector2(sc, sc * 0.6)
-	add_child(f)
-	_flames.append(f)
+func _zone_ok(p: Vector2) -> bool:
+	return field == null or p.distance_to(field.position) < field.radius + 260.0
+
+
+func _intruder(rng_max: float):
+	var g := Game.inst
+	var best = null
+	var bd := rng_max
+	for a in g.allies:
+		if a.dead or not _zone_ok(a.position):
+			continue
+		var d: float = position.distance_to(a.position)
+		if d < bd:
+			bd = d
+			best = a
+	return best
 
 
 func _process(delta: float) -> void:
 	var g := Game.inst
 	t += delta
 	flash = maxf(0.0, flash - delta)
+	bite_cd -= delta
 	match kind:
-		"raider":
-			_raider(delta)
-		"bomber":
-			_bomber(delta)
-		"meteor":
-			_meteor(delta)
+		"mite":
+			_mite(delta)
+		"polyp":
+			_polyp(delta)
+		"lurker":
+			_lurker(delta)
+		"spitter":
+			_spitter(delta)
+		"swarm":
+			_swarm(delta)
 	if dead:
 		return
 	position += vel * delta
-	var lim := Game.WORLD_HALF + 400.0
-	if absf(position.x) > lim or absf(position.y) > lim:
-		remove(false)
-		return
-	fx_t -= delta
-	if fx_t <= 0.0:
-		fx_t = (0.035 if kind == "meteor" else 0.06) * (2.5 if g.low_quality else 1.0)
-		var back := -vel.normalized()
-		var off := hit_radius * (0.7 if kind == "meteor" else 0.9)
-		var c := color if kind != "meteor" else Color(1, randf_range(0.35, 0.75), 0.1)
-		g.fx.spark(position + back * off + Vector2(randf_range(-4, 4), randf_range(-4, 4)), back * randf_range(30, 90) + vel * 0.3, c, randf_range(1.5, 3.2) if kind == "meteor" else 1.6, randf_range(0.3, 0.7))
 	_update_visuals()
+	visible = g.fog.is_seen(position)
 
 
 func _update_visuals() -> void:
 	var white := Color(1, 1, 1)
-	if kind == "meteor":
-		var fl := 0.9 + 0.15 * sin(t * 20.0)
-		Gfx.tint(_body, Color(fl, fl, fl).lerp(white * 1.6, flash * 6.0))
+	var a := 1.0
+	if kind == "lurker" and state == "patrol":
+		a = 0.55
+	var c := white.lerp(Color(2, 2, 2), flash * 6.0)
+	if kind == "lurker" and state == "windup":
+		c = Color(1.6, 1.2, 1.6)
+	Gfx.tint(_body, Color(c, a))
+	for p in _parts:
+		var sp: Sprite2D = p[0]
+		match p[3]:
+			"tent":
+				var sway := 0.35 * sin(t * (2.0 if target == null else 6.0) + p[2])
+				sp.rotation = p[1] + sway
+			"fin-1", "fin1":
+				var sd := -1.0 if p[3] == "fin-1" else 1.0
+				var ph := sin(t * (3.0 if state == "patrol" else 9.0))
+				sp.scale = Vector2(1, -sd * lerpf(0.55, 1.1, 0.5 + 0.5 * ph))
+				Gfx.tint(sp, Color(1, 1, 1, a))
+			"wing-1", "wing1":
+				var sd := -1.0 if p[3] == "wing-1" else 1.0
+				var ph := sin(t * 24.0 + p[2])
+				sp.scale = Vector2(1, -sd * lerpf(0.4, 1.0, absf(ph)))
+				Gfx.tint(sp, Color(1, 1, 1, 0.5 + 0.3 * absf(ph)))
+	if _veins != null:
+		Gfx.tint(_veins, Color(1, 1, 1, 0.6 + 0.4 * sin(t * 5.0)))
+
+
+func _face(dir: Vector2, delta: float, rate := 8.0) -> void:
+	if dir.length_squared() > 1.0:
+		rotation = lerp_angle(rotation, dir.angle(), 1.0 - exp(-rate * delta))
+
+
+func _wander_to(center: Vector2, rad: float, spd: float, delta: float) -> void:
+	wander_t -= delta
+	if wander_t <= 0.0 or position.distance_to(wander) < 20.0:
+		wander_t = randf_range(2.0, 4.0)
+		wander = center + Vector2.RIGHT.rotated(randf() * TAU) * rad * sqrt(randf())
+	var d := wander - position
+	vel = vel.lerp(d.normalized() * spd * clampf(d.length() / 80.0, 0.2, 1.0), 1.0 - exp(-2.0 * delta))
+	_face(vel, delta, 4.0)
+
+
+func _mite(delta: float) -> void:
+	think_t -= delta
+	if think_t <= 0.0:
+		think_t = 0.3
+		target = _intruder(520.0)
+	var hc: Vector2 = owner_polyp.position if (owner_polyp != null and is_instance_valid(owner_polyp)) else (field.position if field != null else home)
+	if target != null and is_instance_valid(target) and not target.dead:
+		var d: Vector2 = target.position - position
+		vel = vel.lerp(d.normalized() * speed, 1.0 - exp(-5.0 * delta))
+		_face(d, delta, 10.0)
+		if d.length() < hit_radius + target.hit_radius + 4.0 and bite_cd <= 0.0:
+			bite_cd = 0.8
+			target.damage(5.0 * tm)
+			Game.inst.fx.burst(target.position, color, 4, 80.0, 1.6, 0.25)
 	else:
-		Gfx.tint(_body, white.lerp(Color(1.8, 1.8, 1.8), flash * 6.0))
-		for i in _flames.size():
-			var f: Sprite2D = _flames[i]
-			f.scale.x = (0.45 + 0.15 * sin(t * 38.0 + i)) * (1.0 if kind == "raider" else 0.9)
+		_wander_to(hc, 200.0, speed * 0.4, delta)
 
 
-func _raider(delta: float) -> void:
+func _polyp(delta: float) -> void:
 	var g := Game.inst
-	retarget_t -= delta
-	if retarget_t <= 0.0 or target == null or not is_instance_valid(target) or target.dead:
-		retarget_t = 0.6
-		target = g.nearest_ally(position, 320.0)
-		if target == null:
-			target = g.station
-	var tp: Vector2 = target.position
-	var to := tp - position
-	var d := to.length()
-	var dir := to / maxf(d, 1.0)
-	var want_d := 200.0 if target != g.station else g.station.radius + 170.0
-	var desired: Vector2
-	if d > want_d + 60.0:
-		desired = dir * speed
+	vel = Vector2.ZERO
+	rotation += 0.15 * delta
+	think_t -= delta
+	if think_t <= 0.0:
+		think_t = 0.3
+		target = _intruder(440.0)
+	spawn_cd -= delta
+	var cap := 2 if tier == 1 else 4
+	var i := 0
+	while i < mites.size():
+		if not is_instance_valid(mites[i]) or mites[i].dead:
+			mites.remove_at(i)
+		else:
+			i += 1
+	if spawn_cd <= 0.0 and mites.size() < cap:
+		spawn_cd = 6.0
+		var m: Enemy = g.spawn_enemy("mite", position + Vector2.RIGHT.rotated(randf() * TAU) * 30.0, field)
+		m.owner_polyp = self
+		mites.append(m)
+		g.fx.burst(position, color, 8, 90.0, 2.0, 0.5)
+	fire_cd -= delta
+	if target != null and is_instance_valid(target) and not target.dead and fire_cd <= 0.0:
+		fire_cd = 2.4
+		var aim: Vector2 = (target.position + target.vel * 0.3 - position).normalized()
+		for s in [-0.22, 0.0, 0.22]:
+			var dir := aim.rotated(s)
+			g.spawn_bolt(position + dir * 24.0, dir * 250.0, 6.0 * tm, color, "spore", 5.0)
+
+
+func _lurker(delta: float) -> void:
+	state_t -= delta
+	var fc: Vector2 = field.position if field != null else home
+	match state:
+		"patrol":
+			_wander_to(fc, field.radius * 0.7 if field != null else 200.0, speed, delta)
+			think_t -= delta
+			if think_t <= 0.0:
+				think_t = 0.3
+				target = _intruder(400.0)
+				if target != null:
+					state = "windup"
+					state_t = 0.55
+		"windup":
+			vel = vel.lerp(Vector2.ZERO, 1.0 - exp(-6.0 * delta))
+			if target == null or not is_instance_valid(target) or target.dead:
+				state = "patrol"
+				return
+			_face(target.position - position, delta, 12.0)
+			if state_t <= 0.0:
+				state = "dash"
+				state_t = 0.55
+				dash_hit = false
+				dash_dir = (target.position + target.vel * 0.25 - position).normalized()
+		"dash":
+			vel = dash_dir * 560.0
+			rotation = dash_dir.angle()
+			if not dash_hit:
+				for a in Game.inst.allies:
+					if not a.dead and position.distance_to(a.position) < hit_radius + a.hit_radius:
+						a.damage(16.0 * tm)
+						dash_hit = true
+						Game.inst.fx.burst(a.position, color, 10, 140.0, 2.0, 0.4)
+						break
+			if state_t <= 0.0:
+				state = "recover"
+				state_t = 1.4
+		"recover":
+			vel = vel.lerp(Vector2.ZERO, 1.0 - exp(-3.0 * delta))
+			if state_t <= 0.0:
+				state = "patrol"
+				if position.distance_to(fc) > (field.radius if field != null else 300.0) + 300.0:
+					wander = fc
+					wander_t = 4.0
+
+
+func _spitter(delta: float) -> void:
+	var g := Game.inst
+	vel = Vector2.ZERO
+	think_t -= delta
+	if think_t <= 0.0:
+		think_t = 0.3
+		target = _intruder(560.0)
+	fire_cd -= delta
+	if target != null and is_instance_valid(target) and not target.dead:
+		var lead: Vector2 = target.position + target.vel * (position.distance_to(target.position) / 430.0)
+		var want := (lead - position).angle()
+		rotation = lerp_angle(rotation, want, 1.0 - exp(-5.0 * delta))
+		if fire_cd <= 0.0 and absf(wrapf(want - rotation, -PI, PI)) < 0.3:
+			fire_cd = 1.8
+			var dir := Vector2.RIGHT.rotated(rotation)
+			g.spawn_bolt(position + dir * 36.0, dir * 430.0, 7.0 * tm, color, "spine", 3.0)
 	else:
-		var tang := dir.orthogonal() * orbit_sign
-		desired = (tang + dir * clampf((d - want_d) / 80.0, -1.0, 1.0) * 0.6).normalized() * speed * 0.85
-	vel = vel.lerp(desired, 1.0 - exp(-3.0 * delta))
-	var face := vel.angle() if d > 340.0 else dir.angle()
-	rotation = lerp_angle(rotation, face, 1.0 - exp(-8.0 * delta))
-	fire_cd -= delta
-	if d < 340.0 and fire_cd <= 0.0:
-		fire_cd = randf_range(1.2, 1.7)
-		var aim: Vector2 = (tp + (target.vel if "vel" in target else Vector2.ZERO) * 0.35 - position).normalized()
-		g.spawn_bolt(position + aim * 14.0, aim * 360.0, 5.0 + 0.6 * wave, color, 3.0)
+		rotation += 0.2 * delta
 
 
-func _bomber(delta: float) -> void:
+func _swarm(delta: float) -> void:
 	var g := Game.inst
-	var st: Station = g.station
-	var to := st.position - position
-	var d := to.length()
-	var dir := to / maxf(d, 1.0)
-	var stop := st.radius + 240.0
-	var desired := dir * speed if d > stop else dir.orthogonal() * orbit_sign * speed * 0.35
-	vel = vel.lerp(desired, 1.0 - exp(-2.0 * delta))
-	rotation = lerp_angle(rotation, dir.angle(), 1.0 - exp(-3.0 * delta))
-	fire_cd -= delta
-	if d < stop + 140.0 and fire_cd <= 0.0:
-		fire_cd = randf_range(2.2, 2.8)
-		for s in [-1.0, 1.0]:
-			var p := position + Vector2(12, 20.0 * s).rotated(rotation)
-			g.spawn_bolt(p, (st.position - p).normalized() * 260.0, 13.0 + wave, Color(1, 0.35, 0.8), 6.0)
-
-
-func _meteor(delta: float) -> void:
-	var g := Game.inst
-	rotation += spin * delta
-	var st: Station = g.station
-	if vel == Vector2.ZERO:
-		vel = (st.position - position).normalized() * speed
-	if position.distance_to(st.position) < st.radius + hit_radius:
-		st.damage(24.0 + 2.0 * wave)
-		g.shake = maxf(g.shake, 8.0)
-		remove(false)
+	think_t -= delta
+	if think_t <= 0.0:
+		think_t = 0.5
+		var ship = g.nearest_ally(position, 140.0)
+		if ship != null:
+			target = ship
+		elif target == null or not is_instance_valid(target) or (target is HiveModule and not target.online()) or (target is Ship and target.dead):
+			target = _pick_module()
+	if target == null or not is_instance_valid(target):
+		_wander_to(Vector2.ZERO, 900.0, speed * 0.5, delta)
 		return
-	for a in g.allies:
-		if a.dead:
-			continue
-		if position.distance_to(a.position) < a.hit_radius + hit_radius:
-			a.damage(18.0)
-			remove(false)
-			return
+	var tr: float = (target.radius() + 18.0) if target is HiveModule else (target.hit_radius + 10.0)
+	var d: Vector2 = target.position - position
+	var dist := d.length()
+	if dist > tr + 40.0:
+		vel = vel.lerp(d / dist * speed, 1.0 - exp(-3.0 * delta))
+	else:
+		var tang := d.orthogonal().normalized() * orbit
+		var radial := d / maxf(dist, 1.0) * clampf((dist - tr) / 30.0, -1.0, 1.0)
+		vel = vel.lerp((tang + radial).normalized() * speed * 0.7, 1.0 - exp(-5.0 * delta))
+		if bite_cd <= 0.0:
+			bite_cd = 0.7
+			if target is HiveModule:
+				target.damage(3.0 * mult)
+			else:
+				target.damage(2.0 * mult)
+			g.fx.burst(position + d * 0.6, color, 3, 70.0, 1.5, 0.25)
+	_face(vel, delta, 10.0)
+
+
+func _pick_module():
+	var g := Game.inst
+	var cands := []
+	for m in g.hive.built_modules():
+		if m.online():
+			cands.append([position.distance_to(m.position), m])
+	if cands.is_empty():
+		return null
+	cands.sort_custom(func(a, b): return a[0] < b[0])
+	return cands[randi() % mini(3, cands.size())][1]
 
 
 func damage(amount: float, by_player: bool = false) -> void:
@@ -185,26 +363,32 @@ func damage(amount: float, by_player: bool = false) -> void:
 		return
 	hp -= amount
 	flash = 0.12
+	if kind == "lurker" and state == "patrol":
+		target = Game.inst.nearest_ally(position, 600.0)
+		if target != null:
+			state = "windup"
+			state_t = 0.4
 	if hp <= 0.0:
-		var g := Game.inst
-		g.on_enemy_killed(self, by_player)
-		remove(true)
+		die(by_player)
 
 
-func remove(killed: bool) -> void:
+func die(by_player: bool) -> void:
 	if dead:
 		return
 	dead = true
 	var g := Game.inst
 	var sc := 1.0
-	if kind == "bomber":
-		sc = 1.8
-	elif kind == "meteor":
-		sc = hit_radius / 18.0
+	match kind:
+		"polyp":
+			sc = 2.0
+		"lurker", "spitter":
+			sc = 1.5
+		"mite", "swarm":
+			sc = 0.7
 	g.fx.explosion(position, color, sc)
-	if kind == "meteor":
-		g.fx.burst(position, Color(0.45, 0.35, 0.3), 12, 120.0, 3.5, 1.2)
-	if not killed and kind != "meteor":
-		pass
+	g.fx.burst(position, Color(0.5, 0.9, 0.5), int(6 * sc), 100.0 * sc, 2.4, 0.9)
+	g.on_enemy_killed(self, by_player)
+	if field != null and slot >= 0:
+		field.on_guardian_died(slot)
 	g.enemies.erase(self)
 	queue_free()

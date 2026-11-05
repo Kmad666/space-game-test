@@ -5,8 +5,8 @@ config_version=5
 
 [application]
 
-config/name="Aegis Run"
-config/description="Mine asteroids, haul ore to Aegis Station, and defend it from raiders."
+config/name="Melissae"
+config/description="Tend the hive: haul nectar, ore and ice, mend its organs, and fend off swarms and the Reaper."
 run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 config/icon="res://icon.svg"

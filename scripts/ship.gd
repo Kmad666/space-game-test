@@ -1,31 +1,31 @@
 class_name Ship
 extends Node2D
-## Player ship and allied bots. Same hull, stats and weapons; bots just get an
-## AI brain instead of the mouse.
+## You and the hive's drones. Same body plan; drones get an AI brain.
+## You: a worker that grows as the hive's glands mature (no menus, just fly).
+## Foragers: harvest whatever the hive craves and haul it home.
+## Guards: patrol the hive and intercept anything that comes for it.
 
-const TIER_NAMES := ["WISP", "HERMES", "PERSEUS", "ACHILLES", "ATLAS"]
-const TIER_THRESH := [0, 4, 10, 18, 28]
+const FORM_NAMES := ["NYMPH", "WORKER", "FORAGER", "WARDEN", "ARISTAEUS"]
+const FORM_THRESH := [0, 2, 5, 9, 14]
 const ACCEL := 3.6
-const UPGRADE_KEYS := ["engine", "cargo", "drill", "missiles", "launcher", "targeting", "hull"]
-
-static var _tier_cache := {}
 
 var is_player := false
+var role := "forager"  # player / forager / guard
 var callsign := ""
-var color := Color(0.3, 0.92, 1.0)
+var color := Gfx.C_PLAYER
 var vel := Vector2.ZERO
 var hp := 60.0
-var cargo := 0.0
-var cargo_value := 0.0
-var levels := {}
-var tier := 0
+var cargo := {"nectar": 0.0, "ore": 0.0, "ice": 0.0}
+var form := 0
 var dead := false
 var respawn_t := 0.0
 var invuln := 0.0
 var hit_flash := 0.0
+var last_hit := 99.0
 var thrust := 0.0
 var t := 0.0
-var hit_radius := 12.0
+var hit_radius := 14.0
+var trail := PackedVector2Array()
 
 var lock_target = null
 var lock_scan := 0.0
@@ -33,87 +33,192 @@ var fire_cd := 0.6
 var side := 1.0
 var mining_target = null
 var mine_fx_t := 0.0
-var depositing := false
+var depositing := ""
+var repairing = null
 var deposit_accum := 0.0
-var trails := []
 
-# bot brain
-var ai_state := "mine"
-var ai_ast = null
+# brain
+var ai_state := "forage"
+var ai_field = null
+var ai_node = null
 var ai_enemy = null
 var think_t := 0.0
 var orbit_phase := 0.0
-var guard := false
+var field_pick_t := 0.0
+
+var _vis: Node2D
+var _body: Sprite2D
+var _veins: Sprite2D
+var _wings: Array = []  # [sprite, root, base_rot, side, phase]
+var _spec: Dictionary
 
 
 func _ready() -> void:
-	for k in UPGRADE_KEYS:
-		if not levels.has(k):
-			levels[k] = 0
 	z_index = 5
 	orbit_phase = randf() * TAU
-	_refresh_tier()
-	hp = max_hp()
+	t = randf() * 5.0
+	if is_player:
+		role = "player"
+		color = Gfx.C_PLAYER
+		form = _calc_form()
+	else:
+		color = Gfx.C_GUARD if role == "guard" else Gfx.C_FORAGER
 	_build_visuals()
+	hp = max_hp()
 
 
 # ---------------------------------------------------------------- stats
+func _gl(k: String) -> int:
+	return Game.inst.hive.gland(k)
+
+
 func max_speed() -> float:
-	return 225.0 * (1.0 + 0.09 * levels.engine) * (1.0 if is_player else 0.93)
+	if is_player:
+		return 215.0 * (1.0 + 0.1 * _gl("wing"))
+	return (185.0 if role == "guard" else 175.0) * (1.0 + 0.04 * _gl("wing"))
+
 
 func cargo_cap() -> float:
-	return 20.0 * (1.0 + 0.4 * levels.cargo)
+	if is_player:
+		return 18.0 * (1.0 + 0.45 * _gl("pouch"))
+	return 14.0 * (1.0 + 0.15 * _gl("pouch")) if role == "forager" else 0.0
+
+
+func cargo_total() -> float:
+	return cargo.nectar + cargo.ore + cargo.ice
+
 
 func mine_rate() -> float:
-	return 7.0 * (1.0 + 0.3 * levels.drill)
+	if is_player:
+		return 7.0 * (1.0 + 0.35 * _gl("proboscis"))
+	return 6.0 * (1.0 + 0.15 * _gl("proboscis"))
+
 
 func mine_reach() -> float:
-	return 60.0 + 12.0 * levels.drill
+	if is_player:
+		return 60.0 + 14.0 * _gl("proboscis")
+	return 55.0
+
 
 func missile_dmg() -> float:
-	return 10.0 * (1.0 + 0.25 * levels.missiles)
+	var v := _gl("venom")
+	if is_player:
+		return 10.0 * (1.0 + 0.3 * v)
+	return (8.0 if role == "guard" else 5.0) * (1.0 + 0.15 * v)
+
 
 func fire_interval() -> float:
-	return 0.95 / (1.0 + 0.15 * levels.launcher)
+	if is_player:
+		return 0.95 / (1.0 + 0.15 * _gl("venom"))
+	return 1.0 if role == "guard" else 1.5
+
 
 func volley() -> int:
-	return 1 + int(levels.launcher / 3)
+	return 1 + int(_gl("venom") / 2) if is_player else 1
+
 
 func lock_range() -> float:
-	return 360.0 + 32.0 * levels.targeting
+	if is_player:
+		return 370.0 + 30.0 * _gl("eye")
+	return 340.0 if role == "guard" else 280.0
+
 
 func max_hp() -> float:
-	return 60.0 + 30.0 * levels.hull + 12.0 * tier
+	if is_player:
+		return 60.0 + 35.0 * _gl("carapace") + 8.0 * form
+	return (50.0 if role == "guard" else 40.0) + 6.0 * _gl("carapace")
 
-func total_levels() -> int:
+
+func vision() -> float:
+	var base := 560.0 if is_player else 380.0
+	return base * Game.inst.hive.vision_mult()
+
+
+func _calc_form() -> int:
+	var hv: Hive = Game.inst.hive
 	var s := 0
-	for k in UPGRADE_KEYS:
-		s += int(levels[k])
-	return s
+	for k in ["carapace", "wing", "pouch", "venom", "proboscis"]:
+		s += hv.modules[k].level
+	var f := 0
+	for i in FORM_THRESH.size():
+		if s >= FORM_THRESH[i]:
+			f = i
+	return f
 
 
-func _refresh_tier() -> void:
-	var tl := total_levels()
-	var nt := 0
-	for i in TIER_THRESH.size():
-		if tl >= TIER_THRESH[i]:
-			nt = i
-	tier = nt
-	hit_radius = tier_data(tier).r
-
-
-## Returns true if the hull class changed.
-func on_upgraded(key: String) -> bool:
-	var old := tier
-	_refresh_tier()
-	if key == "hull":
-		hp = minf(hp + 30.0, max_hp())
-	if tier != old:
+## Called by the game when the hive grows; re-forms the player's body.
+func on_hive_grew() -> bool:
+	if not is_player:
+		return false
+	var nf := _calc_form()
+	hp = minf(hp + 25.0, max_hp())
+	if nf != form:
+		form = nf
 		hp = max_hp()
-		trails.clear()
 		_build_visuals()
 		return true
 	return false
+
+
+# ---------------------------------------------------------------- visuals
+func _build_visuals() -> void:
+	if _vis != null:
+		_vis.queue_free()
+	_wings.clear()
+	_vis = Node2D.new()
+	add_child(_vis)
+	var key: String
+	if is_player:
+		_spec = Gfx.form(form)
+		key = "pf%d" % form
+	else:
+		_spec = Gfx.drone_spec(role == "guard")
+		key = "dg" if role == "guard" else "df"
+	hit_radius = Gfx.bee_radius(_spec)
+	if is_player:
+		var halo := Gfx.sprite("glow", Color(color, 0.1))
+		halo.scale = Vector2.ONE * (hit_radius / 26.0)
+		_vis.add_child(halo)
+	var roots := Gfx.wing_roots(_spec)
+	var pairs: int = _spec.pairs
+	# hind wings first so the fore wings draw over them
+	for pi in range(pairs - 1, -1, -1):
+		var wname: String
+		if is_player:
+			wname = "%s_%s" % [key, "wh" if pi == 1 else "wf"]
+		else:
+			wname = key + "_w"
+		for sd in [-1.0, 1.0]:
+			var w := Gfx.sprite(wname)
+			var root: Vector2 = roots[pi]
+			w.position = Vector2(root.x, -root.y * sd)
+			_vis.add_child(w)
+			_wings.append([w, w.position, 0.0, sd, pi * 0.6])
+	_body = Gfx.sprite(key)
+	_vis.add_child(_body)
+	_veins = Gfx.sprite(key + "_v")
+	_vis.add_child(_veins)
+	_vis.visible = not dead
+
+
+func _update_visuals() -> void:
+	var white := Color(1, 1, 1)
+	var hz := 15.0 + 6.0 * thrust
+	for w in _wings:
+		var sp: Sprite2D = w[0]
+		var ph: float = sin(t * hz + w[4])
+		var fold := lerpf(0.4, 1.0, absf(ph))
+		var sd: float = w[3]
+		# the wing art points to -y (port); starboard wings are mirrored
+		sp.scale = Vector2(1.0, -sd * fold)
+		sp.rotation = -sd * 0.2 * ph
+		Gfx.tint(sp, Color(1, 1, 1, 0.55 + 0.35 * absf(ph)))
+	var flash := hit_flash * 2.0
+	if invuln > 0.0 and int(t * 12.0) % 2 == 0:
+		flash = 0.6
+	Gfx.tint(_body, white.lerp(Color(2, 2, 2), clampf(flash, 0.0, 1.0)))
+	var pulse := 0.65 + 0.35 * sin(t * 3.0 + orbit_phase)
+	Gfx.tint(_veins, Color(1, 1, 1, pulse))
 
 
 # ---------------------------------------------------------------- update
@@ -121,20 +226,28 @@ func _process(delta: float) -> void:
 	var g := Game.inst
 	t += delta
 	if dead:
-		respawn_t -= delta
-		if respawn_t <= 0.0:
-			respawn()
+		if is_player:
+			respawn_t -= delta
+			if respawn_t <= 0.0:
+				respawn()
 		return
 	hit_flash = maxf(0.0, hit_flash - delta)
 	invuln = maxf(0.0, invuln - delta)
+	last_hit += delta
 
-	var desired := _player_desired() if (is_player and not g.autopilot) else _bot_desired(delta)
+	var desired: Vector2
+	if is_player and not g.autopilot:
+		desired = _player_desired()
+	elif role == "guard":
+		desired = _guard_desired(delta)
+	else:
+		desired = _forager_desired(delta)
 	for o in g.allies:
 		if o == self or o.dead:
 			continue
 		var dv: Vector2 = position - o.position
 		var dl := dv.length()
-		var min_d: float = hit_radius + o.hit_radius + 14.0
+		var min_d: float = hit_radius + o.hit_radius + 10.0
 		if dl < min_d and dl > 0.1:
 			desired += dv / dl * (min_d - dl) * 5.0
 	vel = vel.lerp(desired, 1.0 - exp(-ACCEL * delta))
@@ -144,10 +257,15 @@ func _process(delta: float) -> void:
 	if vel.length() > 14.0:
 		rotation = lerp_angle(rotation, vel.angle(), 1.0 - exp(-9.0 * delta))
 	thrust = clampf(vel.length() / max_speed(), 0.0, 1.0)
+	# heal inside the hive
+	if position.length() < Hive.ZONE_R and not g.hive.starving:
+		hp = minf(max_hp(), hp + (5.0 if is_player else 3.0) * delta)
 
-	_update_trails()
+	_update_trail()
 	_mine(delta)
 	_deposit(delta)
+	if is_player:
+		_repair(delta)
 	_combat(delta)
 	_update_visuals()
 
@@ -166,85 +284,97 @@ func _arrive(tp: Vector2, slow_radius: float = 150.0) -> Vector2:
 	return d / dist * max_speed() * clampf((dist - 6.0) / slow_radius, 0.0, 1.0)
 
 
-func _update_trails() -> void:
-	var engines: Array = tier_data(tier).engines
-	if trails.size() != engines.size():
-		trails.clear()
-		for i in engines.size():
-			trails.append(PackedVector2Array())
-	var max_pts := (22 if is_player else 14) / (2 if Game.inst.low_quality else 1)
-	for i in engines.size():
-		var tr: PackedVector2Array = trails[i]
-		tr.append(to_global(engines[i]))
-		while tr.size() > max_pts:
-			tr.remove_at(0)
-		trails[i] = tr
+func _update_trail() -> void:
+	var tail := to_global(Vector2(-(4.0 + 4.1 * _spec.nseg) * _spec.s, 0))
+	trail.append(tail)
+	var mx := (18 if is_player else 10) / (2 if Game.inst.low_quality else 1)
+	while trail.size() > mx:
+		trail.remove_at(0)
 
 
 func _mine(delta: float) -> void:
 	var g := Game.inst
 	mining_target = null
-	if cargo >= cargo_cap() - 0.01:
+	var capv := cargo_cap()
+	if capv <= 0.0 or cargo_total() >= capv - 0.01:
 		return
 	var best = null
 	var bd := INF
 	var reach := mine_reach()
-	for a in g.asteroids:
-		if a.depleted:
-			continue
+	for a in g.res_nodes:
 		var d: float = position.distance_to(a.position) - a.cur_radius()
 		if d < reach and d < bd:
 			best = a
 			bd = d
 	if best == null:
 		return
-	var amt: float = best.take(minf(mine_rate() * delta, cargo_cap() - cargo))
-	cargo += amt
-	cargo_value += amt * best.value
+	var want := minf(mine_rate() * best.rich * delta, capv - cargo_total())
+	var amt: float = best.take(want / best.rich) * best.rich
+	cargo[best.kind] += amt
 	mining_target = best
 	mine_fx_t -= delta
 	if mine_fx_t <= 0.0:
-		mine_fx_t = 0.07
+		mine_fx_t = 0.08 if is_player else 0.16
 		var dir: Vector2 = (position - best.position).normalized()
-		var p: Vector2 = best.position + dir.rotated(randf_range(-0.6, 0.6)) * best.cur_radius() * 0.8
+		var p: Vector2 = best.position + dir.rotated(randf_range(-0.6, 0.6)) * best.cur_radius() * 0.7
 		g.fx.homing(p, self, best.color, randf_range(1.6, 2.6))
 
 
 func _deposit(delta: float) -> void:
 	var g := Game.inst
-	depositing = false
-	if cargo <= 0.0:
+	depositing = ""
+	if cargo_total() <= 0.01:
 		if deposit_accum > 0.5 and is_player:
-			g.fx.text(position + Vector2(0, -hit_radius - 26), "+%d CR" % int(round(deposit_accum)), Color(1, 0.85, 0.35), 20)
+			g.fx.text(position + Vector2(0, -hit_radius - 26), "+%d to the hive" % int(round(deposit_accum)), Gfx.C_HIVE, 18)
 		deposit_accum = 0.0
 		return
-	if position.distance_to(g.station.position) > g.station.dock_radius():
+	for k in ["nectar", "ore", "ice"]:
+		if cargo[k] <= 0.0:
+			continue
+		var m: HiveModule = g.hive.module_for(k)
+		if not m.online() or position.distance_to(m.position) > m.dock_radius():
+			continue
+		var rate := 26.0 + cargo_cap() * 0.8
+		var amt: float = minf(cargo[k], rate * delta)
+		var took := g.hive.deposit(k, amt)
+		cargo[k] -= took
+		if cargo[k] < 0.01:
+			cargo[k] = 0.0
+		if took > 0.0:
+			depositing = k
+			if is_player:
+				deposit_accum += took
+				g.stats_delivered += took
+			if randf() < 0.5:
+				g.fx.homing(position + Vector2(randf_range(-8, 8), randf_range(-8, 8)), m, Gfx.res_color(k), 2.2)
+		elif is_player and randf() < 0.02:
+			g.fx.text(m.position + Vector2(0, -m.radius() - 20), "%s FULL" % m.label, Color(1, 0.7, 0.4), 14)
+
+
+func _repair(delta: float) -> void:
+	var g := Game.inst
+	repairing = null
+	for m in g.hive.built_modules():
+		if m.hp >= m.max_hp:
+			continue
+		if position.distance_to(m.position) > m.dock_radius() + 20.0:
+			continue
+		var amt := 30.0 * delta
+		if g.hive.use("ice", amt * 0.25):
+			m.mend(amt)
+		else:
+			m.mend(amt * 0.35)
+		repairing = m
+		if randf() < 0.3:
+			g.fx.homing(position, m, Gfx.C_HIVE, 2.0)
 		return
-	var amt := minf(cargo, (24.0 + cargo_cap() * 0.7) * delta)
-	var frac := amt / cargo
-	var val := cargo_value * frac
-	cargo -= amt
-	cargo_value -= val
-	if cargo < 0.01:
-		cargo = 0.0
-		cargo_value = 0.0
-	g.station.deposit(amt)
-	g.ore_delivered += amt
-	if is_player:
-		g.credits += val
-		deposit_accum += val
-	else:
-		g.credits += val * 0.2
-	depositing = true
-	if randf() < 0.6:
-		g.fx.homing(position + Vector2(randf_range(-8, 8), randf_range(-8, 8)), g.station, Color(0.85, 0.6, 1.0), 2.2)
 
 
 func _combat(delta: float) -> void:
 	var g := Game.inst
 	lock_scan -= delta
 	if lock_target != null and (not is_instance_valid(lock_target) or lock_target.dead \
-			or position.distance_to(lock_target.position) > lock_range() * 1.1):
+			or position.distance_to(lock_target.position) > lock_range() * 1.15):
 		lock_target = null
 	if lock_scan <= 0.0:
 		lock_scan = 0.15
@@ -254,12 +384,10 @@ func _combat(delta: float) -> void:
 	fire_cd -= delta
 	if lock_target != null and fire_cd <= 0.0:
 		fire_cd = fire_interval()
-		var d: Dictionary = tier_data(tier)
 		var n := volley()
 		for i in n:
 			side = -side
-			var launch_local: Vector2 = d.lights[0] if side < 0 else d.lights[1]
-			var p := to_global(launch_local * 0.8)
+			var p := to_global(Vector2(2.0, 5.0 * side) * _spec.s)
 			var spread := (float(i) - float(n - 1) * 0.5) * 0.35
 			var dir := Vector2.RIGHT.rotated(rotation + side * 1.1 + spread)
 			g.spawn_missile(p, dir * 170.0 + vel * 0.6, lock_target, missile_dmg(), color, is_player)
@@ -270,6 +398,7 @@ func damage(amount: float) -> void:
 		return
 	hp -= amount
 	hit_flash = 0.3
+	last_hit = 0.0
 	var g := Game.inst
 	if is_player:
 		g.shake = maxf(g.shake, 5.0)
@@ -278,22 +407,27 @@ func damage(amount: float) -> void:
 
 
 func die() -> void:
+	if dead:
+		return
 	var g := Game.inst
 	dead = true
-	g.fx.explosion(position, color, 1.0 + tier * 0.25)
-	if cargo > 1.0:
-		g.fx.burst(position, Color(0.8, 0.5, 1.0), int(cargo), 160.0, 2.0, 1.0)
-	cargo = 0.0
-	cargo_value = 0.0
+	g.fx.explosion(position, color, 0.9 + form * 0.2)
+	g.fx.burst(position, Color(0.6, 1.0, 0.7), 14, 120.0, 2.4, 1.0)
+	for k in cargo.keys():
+		cargo[k] = 0.0
 	mining_target = null
 	lock_target = null
 	vel = Vector2.ZERO
-	respawn_t = 4.0 if is_player else 8.0
+	_vis.visible = false
+	trail.clear()
 	if is_player:
+		respawn_t = 5.0
 		g.shake = 14.0
-		g.hud.push_message("SHIP DESTROYED — CARGO LOST", Color(1, 0.35, 0.35), 2.5)
-	if _vis != null:
-		_vis.visible = false
+		g.deaths += 1
+		g.hud.push_message("YOU FELL — CARGO LOST. REBORN AT THE HEART…", Color(1, 0.4, 0.4), 3.0)
+	else:
+		g.on_drone_lost(self)
+		queue_free()
 
 
 func respawn() -> void:
@@ -302,233 +436,161 @@ func respawn() -> void:
 	hp = max_hp()
 	invuln = 2.5
 	var dir := Vector2.RIGHT.rotated(randf() * TAU)
-	position = g.station.position + dir * (g.station.radius + 50.0)
+	position = dir * 175.0
 	rotation = dir.angle()
 	vel = dir * 100.0
-	trails.clear()
-	if _vis != null:
-		_vis.visible = true
+	trail.clear()
+	_vis.visible = true
 	g.fx.ring(position, color, 60.0, 0.6, 3.0)
-	ai_state = "mine"
-	ai_ast = null
 
 
-# ---------------------------------------------------------------- bot brain
-func _bot_desired(delta: float) -> Vector2:
+# ---------------------------------------------------------------- brains
+func _forager_desired(delta: float) -> Vector2:
+	var g := Game.inst
+	var hv: Hive = g.hive
 	think_t -= delta
+	field_pick_t -= delta
 	if think_t <= 0.0:
 		think_t = randf_range(0.35, 0.6)
-		_bot_think()
-	var g := Game.inst
-	var st: Station = g.station
+		_forager_think()
 	match ai_state:
-		"defend":
-			if ai_enemy != null and is_instance_valid(ai_enemy) and not ai_enemy.dead:
-				var away: Vector2 = (position - ai_enemy.position).normalized()
-				if away == Vector2.ZERO:
-					away = Vector2.RIGHT
-				away = away.rotated(0.7 * sin(t * 0.8 + orbit_phase))
-				return _arrive(ai_enemy.position + away * lock_range() * 0.62, 120.0)
-			think_t = 0.0
+		"flee":
+			return _arrive(Vector2.RIGHT.rotated(orbit_phase) * 260.0, 120.0)
 		"return":
-			var dir: Vector2 = (position - st.position).normalized()
-			return _arrive(st.position + dir * (st.radius + 45.0), 120.0)
-		"mine":
-			if ai_ast != null and is_instance_valid(ai_ast) and not ai_ast.depleted:
-				var dir: Vector2 = (position - ai_ast.position).normalized()
-				dir = dir.rotated(0.25 * sin(t * 0.5 + orbit_phase))
-				return _arrive(ai_ast.position + dir * (ai_ast.cur_radius() + mine_reach() * 0.45), 120.0)
-			think_t = 0.0
+			var k := _biggest_cargo()
+			var m: HiveModule = hv.module_for(k) if k != "" else hv.heart
+			if not m.online():
+				m = hv.heart
+			var dir: Vector2 = (position - m.position).normalized()
+			if dir == Vector2.ZERO:
+				dir = Vector2.RIGHT
+			return _arrive(m.position + dir * (m.radius() + 24.0), 110.0)
+		"glob":
+			if ai_node != null and is_instance_valid(ai_node):
+				return _arrive(ai_node.position, 60.0)
+		"forage":
+			if ai_node != null and is_instance_valid(ai_node) and not ai_node.depleted:
+				var dir: Vector2 = (position - ai_node.position).normalized()
+				if dir == Vector2.ZERO:
+					dir = Vector2.RIGHT
+				dir = dir.rotated(0.3 * sin(t * 0.5 + orbit_phase))
+				return _arrive(ai_node.position + dir * (ai_node.cur_radius() + mine_reach() * 0.45), 110.0)
+			if ai_field != null:
+				return _arrive(ai_field.position, 160.0)
 	return vel * 0.5
 
 
-func _bot_think() -> void:
-	var g := Game.inst
-	var st: Station = g.station
-	var cap := cargo_cap()
-	var threat = g.nearest_enemy(st.position, 1100.0) if guard else null
-	var near_me = g.nearest_enemy(position, 420.0)
-	if near_me != null:
-		threat = near_me
-	if threat != null and (cargo < cap * 0.95 or near_me != null):
-		ai_state = "defend"
-		ai_enemy = threat
-		return
-	if cargo >= cap * 0.98:
-		ai_state = "return"
-		return
-	if ai_state == "return" and cargo > 0.0:
-		return
-	ai_state = "mine"
-	if ai_ast == null or not is_instance_valid(ai_ast) or ai_ast.depleted or ai_ast.ore < 2.0:
-		ai_ast = _pick_asteroid()
-		if ai_ast == null and cargo > 0.0:
-			ai_state = "return"
-
-
-func _pick_asteroid():
-	var g := Game.inst
-	var best = null
-	var bs := INF
-	for a in g.asteroids:
-		if a.depleted or a.ore < 4.0:
-			continue
-		var claims := 0
-		for o in g.allies:
-			if o != self and o.ai_ast == a:
-				claims += 1
-		var s: float = position.distance_to(a.position) + 0.4 * a.position.distance_to(g.station.position) \
-				+ 550.0 * claims - a.ore * 2.0 - (160.0 if a.gold else 0.0)
-		if s < bs:
-			bs = s
-			best = a
+func _biggest_cargo() -> String:
+	var best := ""
+	var bv := 0.01
+	for k in cargo.keys():
+		if cargo[k] > bv:
+			bv = cargo[k]
+			best = k
 	return best
 
 
-# ---------------------------------------------------------------- visuals
-# Hulls are pre-baked sprites (see Gfx). Per frame we only move a few sprites:
-# engine flames, strobing nav lights and the hit flash tint.
-var _vis: Node2D
-var _glow: Sprite2D
-var _core: Sprite2D
-var _flames := []
-var _nav := []
-
-
-func _build_visuals() -> void:
-	if not Gfx.ready:
+func _forager_think() -> void:
+	var g := Game.inst
+	var mh := max_hp()
+	if ai_state == "flee":
+		if hp > mh * 0.85:
+			ai_state = "return" if cargo_total() > 0.5 else "forage"
 		return
-	if _vis != null:
-		_vis.queue_free()
-	_vis = Node2D.new()
-	add_child(_vis)
-	var d: Dictionary = tier_data(tier)
-	_flames.clear()
-	_nav.clear()
-	for e in d.engines:
-		var f := Gfx.sprite("flame")
-		f.position = e
-		_vis.add_child(f)
-		_flames.append(f)
-	_glow = Gfx.sprite("ship%d_glow" % tier, color)
-	_vis.add_child(_glow)
-	_core = Gfx.sprite("ship%d_core" % tier)
-	_vis.add_child(_core)
-	for i in 2:
-		var n := Gfx.sprite("dot", Color(1, 0.3, 0.35) if i == 0 else Color(0.35, 1, 0.5))
-		n.position = d.lights[i]
-		n.scale = Vector2.ONE * 0.3
-		_vis.add_child(n)
-		_nav.append(n)
-	_vis.visible = not dead
-	_update_visuals()
-
-
-func _update_visuals() -> void:
-	if _vis == null:
+	if (not is_player and hp < mh * 0.75 and last_hit < 1.0) or (hp < mh * 0.4 and last_hit < 3.0):
+		ai_state = "flee"
 		return
-	var d: Dictionary = tier_data(tier)
-	var s: float = d.s
-	var white := Color(1, 1, 1)
-	for i in _flames.size():
-		var f: Sprite2D = _flames[i]
-		var flick := 0.8 + 0.2 * sin(t * 45.0 + i * 1.7)
-		var flen := (5.0 + 18.0 * thrust) * s * flick
-		f.scale = Vector2(flen / 32.0, 0.4 * s)
-		Gfx.tint(f, color.lerp(white, 0.35))
-	var flash := hit_flash * 2.0
-	if invuln > 0.0 and int(t * 12.0) % 2 == 0:
-		flash = 0.6
-	Gfx.tint(_glow, color.lerp(white, clampf(flash, 0.0, 1.0)))
-	var blink := 0.35 + 0.65 * maxf(0.0, sin(t * 5.0))
-	Gfx.tint(_nav[0], Color(1, 0.3, 0.35, blink))
-	Gfx.tint(_nav[1], Color(0.35, 1, 0.5, blink))
+	var capv := cargo_cap()
+	if cargo_total() >= capv * 0.97:
+		ai_state = "return"
+		return
+	if ai_state == "return" and cargo_total() > 0.5:
+		return
+	# loose globs (Reaper spill) are worth grabbing
+	for gl in g.globs:
+		if position.distance_to(gl.position) < 900.0:
+			ai_state = "glob"
+			ai_node = gl
+			return
+	ai_state = "forage"
+	var want := g.hive.craving()
+	if ai_field == null or field_pick_t <= 0.0 or ai_field.node_count() == 0:
+		field_pick_t = randf_range(18.0, 30.0)
+		ai_field = _pick_field(want)
+		ai_node = null
+	if ai_field == null:
+		if cargo_total() > 0.5:
+			ai_state = "return"
+		return
+	if ai_node == null or not is_instance_valid(ai_node) or not (ai_node is ResNode) or ai_node.depleted or ai_node.amount < 2.0:
+		ai_node = _pick_node(ai_field)
+		if ai_node == null:
+			field_pick_t = 0.0
+			if cargo_total() > 0.5:
+				ai_state = "return"
 
 
-## Draws a hull from the atlas (title screen line-up). ci must use Gfx.premult.
-static func blit_ship(ci: CanvasItem, tr: int, col: Color, time: float, thr: float, pos: Vector2, rot: float, sc: float) -> void:
-	var d: Dictionary = tier_data(tr)
-	var s: float = d.s
-	ci.draw_set_transform(pos, rot, Vector2.ONE * sc)
-	for i in d.engines.size():
-		var e: Vector2 = d.engines[i]
-		var flen := (5.0 + 18.0 * thr) * s * (0.8 + 0.2 * sin(time * 45.0 + i * 1.7))
-		ci.draw_set_transform(pos + (e * sc).rotated(rot), rot, Vector2(flen / 32.0, 0.4 * s) * sc)
-		Gfx.blit(ci, "flame", Vector2.ZERO, 1.0, col.lerp(Color.WHITE, 0.35))
-	ci.draw_set_transform(pos, rot, Vector2.ONE * sc)
-	Gfx.blit(ci, "ship%d_glow" % tr, Vector2.ZERO, 1.0, col)
-	Gfx.blit(ci, "ship%d_core" % tr, Vector2.ZERO, 1.0, Color.WHITE)
-	var blink := 0.35 + 0.65 * maxf(0.0, sin(time * 5.0))
-	Gfx.blit(ci, "dot", d.lights[0], 0.3, Color(1, 0.3, 0.35, blink))
-	Gfx.blit(ci, "dot", d.lights[1], 0.3, Color(0.35, 1, 0.5, blink))
-	ci.draw_set_transform(Vector2.ZERO)
+func _pick_field(want: String):
+	var g := Game.inst
+	var best = null
+	var bs := INF
+	for f in g.fields:
+		if f.node_count() == 0:
+			continue
+		var s: float = f.position.length() + f.threat() * (700.0 if not is_player else 250.0)
+		if f.kind != want:
+			s += 2500.0
+		s += randf_range(0.0, 300.0)
+		if s < bs:
+			bs = s
+			best = f
+	return best
 
 
-static func tier_data(tr: int) -> Dictionary:
-	if _tier_cache.has(tr):
-		return _tier_cache[tr]
-	var k := 1.5
-	var d := {}
-	match tr:
-		0:
-			d.hull = Neon.mirror([Vector2(16, 0), Vector2(6, -4), Vector2(-4, -11), Vector2(-9, -11), Vector2(-6, -4), Vector2(-9, 0)], k)
-			d.cockpit = Neon.mirror([Vector2(9, 0), Vector2(4, -2.2), Vector2(0, 0)], k)
-			d.engines = [Vector2(-8, 0) * k]
-			d.lines = [[Vector2(2, -3) * k, Vector2(-5, -9) * k], [Vector2(2, 3) * k, Vector2(-5, 9) * k]]
-			d.lights = [Vector2(-6, -11) * k, Vector2(-6, 11) * k]
-			d.nose = Vector2(16, 0) * k
-			d.s = 1.0
-			d.r = 16.0
-		1:
-			d.hull = Neon.mirror([Vector2(22, 0), Vector2(10, -3), Vector2(2, -5), Vector2(-2, -15), Vector2(-8, -16), Vector2(-8, -6), Vector2(-13, -4), Vector2(-12, 0)], k)
-			d.cockpit = Neon.mirror([Vector2(12, 0), Vector2(6, -2.5), Vector2(2, 0)], k)
-			d.engines = [Vector2(-12.5, -2.2) * k, Vector2(-12.5, 2.2) * k]
-			d.lines = [[Vector2(10, -3) * k, Vector2(-8, -6) * k], [Vector2(10, 3) * k, Vector2(-8, 6) * k],
-				[Vector2(0, -9) * k, Vector2(-6, -14) * k], [Vector2(0, 9) * k, Vector2(-6, 14) * k]]
-			d.lights = [Vector2(-5, -15.5) * k, Vector2(-5, 15.5) * k]
-			d.nose = Vector2(22, 0) * k
-			d.s = 1.15
-			d.r = 20.0
-		2:
-			d.hull = Neon.mirror([Vector2(28, 0), Vector2(14, -4), Vector2(4, -6), Vector2(0, -10), Vector2(6, -19), Vector2(0, -21),
-				Vector2(-12, -21), Vector2(-10, -12), Vector2(-16, -12), Vector2(-14, -6), Vector2(-18, -4), Vector2(-16, 0)], k)
-			d.cockpit = Neon.mirror([Vector2(16, 0), Vector2(9, -3), Vector2(4, 0)], k)
-			d.engines = [Vector2(-17.5, -2.2) * k, Vector2(-17.5, 2.2) * k, Vector2(-11.5, -17) * k, Vector2(-11.5, 17) * k]
-			d.lines = [[Vector2(14, -4) * k, Vector2(-14, -6) * k], [Vector2(14, 4) * k, Vector2(-14, 6) * k],
-				[Vector2(0, -10) * k, Vector2(-10, -12) * k], [Vector2(0, 10) * k, Vector2(-10, 12) * k],
-				[Vector2(3, -17) * k, Vector2(-10, -17) * k], [Vector2(3, 17) * k, Vector2(-10, 17) * k]]
-			d.lights = [Vector2(4, -19.5) * k, Vector2(4, 19.5) * k]
-			d.nose = Vector2(28, 0) * k
-			d.s = 1.3
-			d.r = 25.0
-		3:
-			d.hull = Neon.mirror([Vector2(34, 0), Vector2(20, -5), Vector2(8, -7), Vector2(4, -12), Vector2(14, -26), Vector2(6, -28),
-				Vector2(-10, -26), Vector2(-14, -14), Vector2(-22, -14), Vector2(-20, -8), Vector2(-26, -6), Vector2(-24, 0)], k)
-			d.cockpit = Neon.mirror([Vector2(21, 0), Vector2(12, -3.5), Vector2(6, 0)], k)
-			d.engines = [Vector2(-25.5, -3) * k, Vector2(-25.5, 3) * k, Vector2(-21, -11) * k, Vector2(-21, 11) * k]
-			d.lines = [[Vector2(20, -5) * k, Vector2(-20, -8) * k], [Vector2(20, 5) * k, Vector2(-20, 8) * k],
-				[Vector2(4, -12) * k, Vector2(-14, -14) * k], [Vector2(4, 12) * k, Vector2(-14, 14) * k],
-				[Vector2(10, -24) * k, Vector2(-8, -21) * k], [Vector2(10, 24) * k, Vector2(-8, 21) * k],
-				[Vector2(4, -6) * k, Vector2(4, 6) * k], [Vector2(-6, -7) * k, Vector2(-6, 7) * k]]
-			d.lights = [Vector2(7, -27) * k, Vector2(7, 27) * k]
-			d.nose = Vector2(34, 0) * k
-			d.s = 1.5
-			d.r = 31.0
-		_:
-			d.hull = Neon.mirror([Vector2(44, 0), Vector2(30, -6), Vector2(16, -8), Vector2(12, -14), Vector2(22, -30), Vector2(14, -34),
-				Vector2(-6, -32), Vector2(-12, -20), Vector2(-18, -20), Vector2(-14, -38), Vector2(-24, -40), Vector2(-34, -22),
-				Vector2(-30, -12), Vector2(-36, -8), Vector2(-34, 0)], k)
-			d.cockpit = Neon.mirror([Vector2(28, 0), Vector2(18, -4), Vector2(10, 0)], k)
-			d.engines = [Vector2(-35.5, -3.5) * k, Vector2(-35.5, 3.5) * k, Vector2(-31.5, -17) * k, Vector2(-31.5, 17) * k]
-			d.lines = [[Vector2(30, -6) * k, Vector2(-30, -10) * k], [Vector2(30, 6) * k, Vector2(-30, 10) * k],
-				[Vector2(12, -14) * k, Vector2(-12, -20) * k], [Vector2(12, 14) * k, Vector2(-12, 20) * k],
-				[Vector2(18, -30) * k, Vector2(-4, -28) * k], [Vector2(18, 30) * k, Vector2(-4, 28) * k],
-				[Vector2(-16, -36) * k, Vector2(-30, -22) * k], [Vector2(-16, 36) * k, Vector2(-30, 22) * k],
-				[Vector2(6, -8) * k, Vector2(6, 8) * k], [Vector2(-8, -10) * k, Vector2(-8, 10) * k], [Vector2(-20, -10) * k, Vector2(-20, 10) * k]]
-			d.lights = [Vector2(16, -33) * k, Vector2(16, 33) * k]
-			d.nose = Vector2(44, 0) * k
-			d.s = 1.8
-			d.r = 40.0
-	d.fill_ok = not Geometry2D.triangulate_polygon(d.hull).is_empty()
-	_tier_cache[tr] = d
-	return d
+func _pick_node(f):
+	var g := Game.inst
+	var best = null
+	var bs := INF
+	for nd in g.res_nodes:
+		if nd.field != f or nd.amount < 2.0:
+			continue
+		var claims := 0
+		for o in g.allies:
+			if o != self and o.ai_node == nd:
+				claims += 1
+		var s: float = position.distance_to(nd.position) + 300.0 * claims - nd.amount * 2.0
+		if s < bs:
+			bs = s
+			best = nd
+	return best
+
+
+func _guard_desired(delta: float) -> Vector2:
+	var g := Game.inst
+	think_t -= delta
+	if think_t <= 0.0:
+		think_t = randf_range(0.3, 0.5)
+		ai_enemy = null
+		var best = null
+		var bd := Hive.ZONE_R + 300.0
+		for e in g.enemies:
+			if e.dead:
+				continue
+			var d: float = e.position.length()
+			if e.kind == "reaper":
+				d -= 600.0
+			if d < bd:
+				bd = d
+				best = e
+		ai_enemy = best
+		if hp < max_hp() * 0.35:
+			ai_enemy = null
+	if ai_enemy != null and is_instance_valid(ai_enemy) and not ai_enemy.dead:
+		var away: Vector2 = (position - ai_enemy.position).normalized()
+		if away == Vector2.ZERO:
+			away = Vector2.RIGHT
+		away = away.rotated(0.7 * sin(t * 0.8 + orbit_phase))
+		return _arrive(ai_enemy.position + away * lock_range() * 0.6, 100.0)
+	var a := orbit_phase + t * 0.06
+	var r := 820.0 + 260.0 * sin(t * 0.13 + orbit_phase)
+	return _arrive(Vector2.RIGHT.rotated(a) * r, 160.0) * 0.7

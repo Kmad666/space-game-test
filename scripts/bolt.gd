@@ -1,19 +1,23 @@
 class_name Bolt
 extends Node2D
-## Enemy blaster bolt. Hits the station or any allied ship it touches.
+## Enemy projectile (spore glob or spine). Hits any allied ship it touches.
 
 var vel := Vector2.ZERO
 var dmg := 4.0
-var col := Color(1, 0.3, 0.3)
+var col := Gfx.C_FOE
 var size := 3.0
-var life := 1.8
+var art := "spore"
+var life := 2.0
 
 
 func _ready() -> void:
 	z_index = 6
 	rotation = vel.angle()
-	var sp := Gfx.sprite("bolt", col)
-	sp.scale = Vector2(1.0 + size * 0.1, size / 3.0)
+	var sp := Gfx.sprite(art, col)
+	if art == "spine":
+		sp.scale = Vector2.ONE * (size / 3.0)
+	else:
+		sp.scale = Vector2.ONE * (size / 5.0)
 	add_child(sp)
 
 
@@ -24,12 +28,7 @@ func _process(delta: float) -> void:
 		queue_free()
 		return
 	position += vel * delta
-	var st: Station = g.station
-	if not st.dead and position.distance_to(st.position) < st.radius + 10.0:
-		st.damage(dmg)
-		g.fx.burst(position, col, 6, 100.0, 1.6, 0.3)
-		queue_free()
-		return
+	visible = g.fog.is_seen(position)
 	for a in g.allies:
 		if a.dead:
 			continue
