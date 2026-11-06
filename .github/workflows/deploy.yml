@@ -51,7 +51,11 @@ jobs:
           GODOT=~/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64
           mkdir -p build/web
           $GODOT --headless --import || true
-          $GODOT --headless --export-release "Web" build/web/index.html
+          # Export under a per-commit name so browsers never reuse a stale
+          # game file from an older deploy; index.html just redirects to it.
+          NAME="melissae-${GITHUB_SHA::8}"
+          $GODOT --headless --export-release "Web" build/web/$NAME.html
+          printf '<!doctype html><meta charset="utf-8"><meta http-equiv="Cache-Control" content="no-cache"><title>Melissae</title><script>location.replace("%s.html")</script><a href="%s.html">Play Melissae</a>' "$NAME" "$NAME" > build/web/index.html
           touch build/web/.nojekyll
           ls -la build/web
 
