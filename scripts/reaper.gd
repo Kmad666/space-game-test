@@ -28,6 +28,9 @@ var snapshot := {}
 var stolen_frac := 0.0
 var lash_cd := 2.0
 var exit_point := Vector2.ZERO
+var home_pos := Vector2.ZERO
+var nav_t := 0.0
+var nav_pt := Vector2.ZERO
 
 var _head: Sprite2D
 var _seg_sprites: Array = []
@@ -38,6 +41,7 @@ var _glow: Sprite2D
 func setup(pos: Vector2, idx: int) -> void:
 	index = idx
 	position = pos
+	home_pos = pos
 	max_hp = 3200.0 + 1400.0 * idx
 	hp = max_hp
 	heading = (-pos).angle()
@@ -86,14 +90,11 @@ func _process(delta: float) -> void:
 			var cap := 0.15 + 0.15 * (hp / max_hp)
 			if stolen_frac >= cap:
 				state = "flee"
-				var dir := position.normalized()
-				if dir == Vector2.ZERO:
-					dir = Vector2.RIGHT
-				exit_point = dir * (Game.WORLD_HALF * 1.5)
+				exit_point = home_pos
 				g.hud.push_message("THE REAPER IS FLEEING WITH %d%% OF THE STORES — CHASE IT DOWN!" % int(round(stolen_frac * 100.0)), Color(1, 0.5, 0.85), 4.0)
 		"flee":
 			goal = exit_point
-			if absf(position.x) > Game.WORLD_HALF + 200.0 or absf(position.y) > Game.WORLD_HALF + 200.0:
+			if position.distance_to(exit_point) < 160.0:
 				g.on_reaper_escaped(self)
 				dead = true
 				g.enemies.erase(self)
@@ -102,10 +103,15 @@ func _process(delta: float) -> void:
 	var spd := speed if state != "flee" else 78.0
 	if state == "siphon":
 		spd = 30.0
-	var want := (goal - position).angle() + 0.3 * sin(t * 1.4)
-	heading = lerp_angle(heading, want, 1.0 - exp(-0.9 * delta))
+	nav_t -= delta
+	if nav_t <= 0.0 or position.distance_to(nav_pt) < 70.0:
+		nav_t = 0.5
+		nav_pt = g.cave.steer(position, goal)
+	var want := (nav_pt - position).angle() + 0.25 * sin(t * 1.4)
+	heading = lerp_angle(heading, want, 1.0 - exp(-1.6 * delta))
 	vel = Vector2.RIGHT.rotated(heading) * spd
 	position += vel * delta
+	position = g.cave.constrain(position, 40.0)
 	# chain
 	var prev := position - Vector2.RIGHT.rotated(heading) * 34.0
 	for i in NSEG:

@@ -45,6 +45,9 @@ var ai_enemy = null
 var think_t := 0.0
 var orbit_phase := 0.0
 var field_pick_t := 0.0
+var nav_t := 0.0
+var nav_goal := Vector2(INF, INF)
+var nav_pt := Vector2.ZERO
 
 var _vis: Node2D
 var _body: Sprite2D
@@ -126,7 +129,7 @@ func lock_range() -> float:
 func max_hp() -> float:
 	if is_player:
 		return 60.0 + 35.0 * _gl("carapace") + 8.0 * form
-	return (50.0 if role == "guard" else 40.0) + 6.0 * _gl("carapace")
+	return (55.0 if role == "guard" else 50.0) + 6.0 * _gl("carapace")
 
 
 func vision() -> float:
@@ -252,8 +255,13 @@ func _process(delta: float) -> void:
 			desired += dv / dl * (min_d - dl) * 5.0
 	vel = vel.lerp(desired, 1.0 - exp(-ACCEL * delta))
 	position += vel * delta
-	var w := Game.WORLD_HALF - 20.0
-	position = position.clamp(Vector2(-w, -w), Vector2(w, w))
+	var c := g.cave.constrain(position, hit_radius * 0.6)
+	if c != position:
+		var nrm := (c - position).normalized()
+		var vn := vel.dot(nrm)
+		if vn < 0.0:
+			vel -= nrm * vn
+		position = c
 	if vel.length() > 14.0:
 		rotation = lerp_angle(rotation, vel.angle(), 1.0 - exp(-9.0 * delta))
 	thrust = clampf(vel.length() / max_speed(), 0.0, 1.0)
@@ -274,6 +282,18 @@ func _player_desired() -> Vector2:
 	if Input.is_key_pressed(KEY_SPACE):
 		return Vector2.ZERO
 	return _arrive(get_global_mouse_position(), 190.0)
+
+
+## Like _arrive, but routes through the tunnels when the target isn't in sight.
+func _go(tp: Vector2, slow_radius: float = 150.0) -> Vector2:
+	nav_t -= get_process_delta_time()
+	if nav_t <= 0.0 or tp.distance_to(nav_goal) > 60.0 or position.distance_to(nav_pt) < 50.0:
+		nav_t = 0.35
+		nav_goal = tp
+		nav_pt = Game.inst.cave.steer(position, tp)
+	if nav_pt.distance_to(tp) < 1.0:
+		return _arrive(tp, slow_radius)
+	return _arrive(nav_pt, 30.0)
 
 
 func _arrive(tp: Vector2, slow_radius: float = 150.0) -> Vector2:
@@ -399,6 +419,9 @@ func damage(amount: float) -> void:
 	hp -= amount
 	hit_flash = 0.3
 	last_hit = 0.0
+	if not is_player and ai_field != null and position.distance_to(ai_field.position) < ai_field.radius + 300.0:
+		ai_field.danger = 45.0
+		field_pick_t = 0.0
 	var g := Game.inst
 	if is_player:
 		g.shake = maxf(g.shake, 5.0)
@@ -436,7 +459,7 @@ func respawn() -> void:
 	hp = max_hp()
 	invuln = 2.5
 	var dir := Vector2.RIGHT.rotated(randf() * TAU)
-	position = dir * 175.0
+	position = dir * 140.0
 	rotation = dir.angle()
 	vel = dir * 100.0
 	trail.clear()
@@ -455,7 +478,7 @@ func _forager_desired(delta: float) -> Vector2:
 		_forager_think()
 	match ai_state:
 		"flee":
-			return _arrive(Vector2.RIGHT.rotated(orbit_phase) * 260.0, 120.0)
+			return _go(Vector2.RIGHT.rotated(orbit_phase) * 150.0, 120.0)
 		"return":
 			var k := _biggest_cargo()
 			var m: HiveModule = hv.module_for(k) if k != "" else hv.heart
@@ -464,19 +487,19 @@ func _forager_desired(delta: float) -> Vector2:
 			var dir: Vector2 = (position - m.position).normalized()
 			if dir == Vector2.ZERO:
 				dir = Vector2.RIGHT
-			return _arrive(m.position + dir * (m.radius() + 24.0), 110.0)
+			return _go(m.position + dir * (m.radius() + 24.0), 110.0)
 		"glob":
 			if ai_node != null and is_instance_valid(ai_node):
-				return _arrive(ai_node.position, 60.0)
+				return _go(ai_node.position, 60.0)
 		"forage":
 			if ai_node != null and is_instance_valid(ai_node) and not ai_node.depleted:
 				var dir: Vector2 = (position - ai_node.position).normalized()
 				if dir == Vector2.ZERO:
 					dir = Vector2.RIGHT
 				dir = dir.rotated(0.3 * sin(t * 0.5 + orbit_phase))
-				return _arrive(ai_node.position + dir * (ai_node.cur_radius() + mine_reach() * 0.45), 110.0)
+				return _go(ai_node.position + dir * (ai_node.cur_radius() + mine_reach() * 0.45), 110.0)
 			if ai_field != null:
-				return _arrive(ai_field.position, 160.0)
+				return _go(ai_field.position, 160.0)
 	return vel * 0.5
 
 
@@ -497,7 +520,7 @@ func _forager_think() -> void:
 		if hp > mh * 0.85:
 			ai_state = "return" if cargo_total() > 0.5 else "forage"
 		return
-	if (not is_player and hp < mh * 0.75 and last_hit < 1.0) or (hp < mh * 0.4 and last_hit < 3.0):
+	if (not is_player and hp < mh * 0.55 and last_hit < 1.0) or (hp < mh * 0.4 and last_hit < 3.0):
 		ai_state = "flee"
 		return
 	var capv := cargo_cap()
@@ -537,7 +560,7 @@ func _pick_field(want: String):
 	for f in g.fields:
 		if f.node_count() == 0:
 			continue
-		var s: float = f.position.length() + f.threat() * (700.0 if not is_player else 250.0)
+		var s: float = f.position.length() + f.threat() * (700.0 if not is_player else 250.0) + (1800.0 if f.danger > 0.0 else 0.0)
 		if f.kind != want:
 			s += 2500.0
 		s += randf_range(0.0, 300.0)
@@ -590,7 +613,7 @@ func _guard_desired(delta: float) -> Vector2:
 		if away == Vector2.ZERO:
 			away = Vector2.RIGHT
 		away = away.rotated(0.7 * sin(t * 0.8 + orbit_phase))
-		return _arrive(ai_enemy.position + away * lock_range() * 0.6, 100.0)
+		return _go(ai_enemy.position + away * lock_range() * 0.6, 100.0)
 	var a := orbit_phase + t * 0.06
-	var r := 820.0 + 260.0 * sin(t * 0.13 + orbit_phase)
-	return _arrive(Vector2.RIGHT.rotated(a) * r, 160.0) * 0.7
+	var r := 420.0 + 140.0 * sin(t * 0.13 + orbit_phase)
+	return _go(Vector2.RIGHT.rotated(a) * r, 160.0) * 0.7

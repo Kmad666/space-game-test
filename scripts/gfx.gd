@@ -196,6 +196,7 @@ static func build(host: Node) -> void:
 	items.append(["lurker", Rect2(-62, -40, 100, 80), _lurker])
 	items.append(["lurker_f", Rect2(-26, -42, 42, 48), _lurker_fin])
 	items.append(["spitter", Rect2(-40, -40, 84, 80), _spitter])
+	items.append(["nest", Rect2(-130, -130, 260, 260), _nest.bind(rng.randi())])
 	items.append(["reaper_h", Rect2(-56, -62, 152, 124), _reaper_head])
 	items.append(["reaper_s", Rect2(-40, -66, 80, 132), _reaper_seg])
 	items.append(["reaper_t", Rect2(-84, -32, 116, 64), _reaper_tail])
@@ -479,6 +480,33 @@ static func _spitter(ci: CanvasItem) -> void:
 	Bio.chitin(ci, Bio.ellipse(Vector2.ZERO, 19.0, 18.0), FOE_BASE, FOE_RIM, 1.4)
 	Bio.membrane(ci, Bio.ellipse(Vector2(-2, 0), 9.0, 8.0), C_FOE, 0.45)
 	Bio.spot(ci, Vector2(37, 0), 3.0, C_FOE, 1.0)
+
+
+static func _nest(ci: CanvasItem, seed_v: int) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_v
+	Bio.halo(ci, Vector2.ZERO, 125.0, C_FOE, 0.55)
+	var hs := 14.0
+	var sq3 := sqrt(3.0)
+	for q in range(-8, 9):
+		for r in range(-8, 9):
+			var c := Vector2(hs * 1.5 * q, hs * sq3 * (r + q * 0.5))
+			var d := c.length()
+			if d < 40.0 or d > 112.0:
+				continue
+			var fade := 1.0 - (d - 40.0) / 72.0
+			var hx := Bio.hexagon(c, hs * 0.9)
+			Bio.fill(ci, hx, Color(0.16, 0.03, 0.08, 0.9 * fade) if rng.randf() < 0.7 else Color(C_FOE, 0.3 * fade))
+			ci.draw_polyline(Bio.closed(hx), Color(FOE_RIM, 0.6 * fade), 1.2, true)
+	Bio.chitin(ci, Bio.wobble(Vector2.ZERO, 48.0, 12, 0.14, rng), FOE_BASE, FOE_RIM, 2.0)
+	Bio.fill(ci, Bio.ellipse(Vector2.ZERO, 24.0, 24.0), Color(0.04, 0.0, 0.02, 1))
+	for i in 10:
+		var d := Vector2.RIGHT.rotated(TAU * i / 10.0)
+		Bio.fill(ci, PackedVector2Array([d * 24.0 + d.orthogonal() * 3.5, d * 14.0, d * 24.0 - d.orthogonal() * 3.5]), FOE_RIM.lightened(0.3))
+	Bio.spot(ci, Vector2.ZERO, 6.0, C_FOE, 1.0)
+	for i in 8:
+		var a := TAU * i / 8.0 + 0.2
+		Bio.vein(ci, Bio.smooth([Vector2.RIGHT.rotated(a) * 30.0, Vector2.RIGHT.rotated(a + 0.2) * 40.0, Vector2.RIGHT.rotated(a + 0.1) * 46.0], false, 3), C_FOE, 1.0, 0.6)
 
 
 static func _reaper_head(ci: CanvasItem) -> void:

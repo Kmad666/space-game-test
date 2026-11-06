@@ -20,6 +20,7 @@ const INFO := {
 }
 const CORE := ["vault", "forge", "cistern", "brood"]
 const GLANDS := ["carapace", "wing", "pouch", "venom", "proboscis", "eye"]
+const MS := 0.62  # the hive is compact: every organ is drawn at this scale
 
 var type := "vault"
 var label := ""
@@ -54,6 +55,7 @@ func setup(tp: String) -> void:
 	z_index = 1 if tp != "heart" else 0
 	t = randf() * 10.0
 	fire_cd = randf()
+	scale = Vector2.ONE * MS
 	_bud = Gfx.sprite("bud")
 	_bud.scale = Vector2.ONE * clampf(base_r / 50.0, 0.7, 1.6)
 	add_child(_bud)
@@ -110,7 +112,7 @@ func efficiency() -> float:
 
 
 func radius() -> float:
-	return base_r * (1.0 + 0.08 * maxi(level - 1, 0))
+	return base_r * MS * (1.0 + 0.08 * maxi(level - 1, 0))
 
 
 func dock_radius() -> float:
@@ -119,10 +121,10 @@ func dock_radius() -> float:
 
 func vision() -> float:
 	if type == "heart":
-		return 780.0
+		return 620.0
 	if type == "spire":
-		return 560.0
-	return 520.0 if type in CORE else 480.0
+		return 420.0
+	return 360.0 if type in CORE else 320.0
 
 
 func _calc_max_hp() -> float:
@@ -160,7 +162,7 @@ func set_level(l: int) -> void:
 		for i in maxi(level - 1, 0):
 			var nd := Gfx.sprite("nodule")
 			var a := TAU * i / maxf(level - 1, 1) + 0.6
-			nd.position = Vector2.RIGHT.rotated(a) * radius() * 0.92
+			nd.position = Vector2.RIGHT.rotated(a) * radius() * 0.92 / MS
 			add_child(nd)
 			_nodules.append(nd)
 
@@ -248,7 +250,7 @@ func _process(delta: float) -> void:
 	if _dock != null:
 		var carrying: bool = g.player != null and not g.player.dead and g.player.cargo.get(accepts, 0.0) > 0.5
 		_dock.rotation = t * 0.08
-		_dock.scale = Vector2.ONE * (dock_radius() / 128.0)
+		_dock.scale = Vector2.ONE * (dock_radius() / 128.0 / MS)
 		var a := 0.12 + (0.3 + 0.15 * sin(t * 5.0) if carrying else 0.0)
 		Gfx.tint(_dock, Color(Gfx.res_color(accepts), a * (1.0 if online() else 0.3)))
 
@@ -267,7 +269,7 @@ func _spire(delta: float) -> void:
 		if fire_cd <= 0.0:
 			fire_cd = 1.05 / efficiency()
 			if g.hive.use("ice", 0.6):
-				var tip := position + Vector2.RIGHT.rotated(aim) * 44.0
+				var tip := position + Vector2.RIGHT.rotated(aim) * 44.0 * MS
 				g.fx.beam(tip, target.position, Gfx.C_ICE, 0.16, 2.6)
 				g.fx.burst(target.position, Gfx.C_ICE, 4, 90.0, 1.6, 0.3)
 				target.damage(9.0 + 4.0 * level, false)

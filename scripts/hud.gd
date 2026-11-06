@@ -227,7 +227,10 @@ func _draw_threat_panel() -> void:
 		_txt(Vector2(cx, y), "SWARM — %d SWARMLING%s" % [swarm, "" if swarm == 1 else "S"], 15, Color(Gfx.C_SWARM, 0.8 + 0.2 * sin(t * 6.0)), HORIZONTAL_ALIGNMENT_CENTER, w, true)
 	else:
 		var col := Color(1, 1, 1, 0.75) if g.swarm_t > 12.0 else Color(Gfx.C_SWARM, 0.75 + 0.25 * sin(t * 10.0))
-		_txt(Vector2(cx, y), "NEXT SWARM %s  ·  %s" % [_mmss(g.swarm_t), Game.compass(g.swarm_dir) if g.swarm_t < 12.0 else "?"], 14, col, HORIZONTAL_ALIGNMENT_CENTER, w)
+		var src := "?" if g.swarm_src == null or g.swarm_t >= 12.0 else g.swarm_src.field_name
+		if g.swarm_src == null:
+			src = "the burrows are quiet"
+		_txt(Vector2(cx, y), "NEXT SWARM %s  ·  %s" % [_mmss(g.swarm_t), src], 14, col, HORIZONTAL_ALIGNMENT_CENTER, w)
 	y += 24
 	if rp != null:
 		var s := "REAPER INBOUND"
@@ -247,6 +250,17 @@ func _draw_minimap() -> void:
 	_panel(r)
 	draw_rect(r.grow(-4), Color(0.02, 0.025, 0.04, 1))
 	var hv: Hive = g.hive
+	var k := (MM - 8.0) / (Game.WORLD_HALF * 2.0)
+	for tn in g.cave.tunnels:
+		var pts := PackedVector2Array()
+		for p in tn[0]:
+			pts.append(world_to_mini(p))
+		draw_polyline(pts, Color(0.35, 0.25, 0.42, 0.9), maxf(tn[1] * 2.0 * k, 2.0))
+	for c in g.cave.chambers:
+		draw_circle(world_to_mini(c.pos), c.r * k, Color(0.35, 0.25, 0.42, 0.9))
+	for n in g.nests:
+		if n.discovered:
+			draw_circle(world_to_mini(n.position), 5.0, Color(Gfx.C_FOE, 0.4 if n.dormant() else 0.9))
 	# hive: veins of the organs
 	for m in hv.all_modules():
 		var p := world_to_mini(m.position)
@@ -404,9 +418,9 @@ func _draw_indicators() -> void:
 	if rp != null:
 		_point_at(rp.position, "REAPER", MAG, 18.0, 40.0)
 	elif g.reaper_t < 30.0 and g.state == "playing":
-		_point_at(g.reaper_dir * Game.WORLD_HALF, "REAPER STIRS", Color(MAG, 0.5 + 0.5 * sin(t * 6.0)), 16.0, 40.0)
-	if g.swarm_t < 12.0 and g.state == "playing":
-		_point_at(g.swarm_dir * Game.WORLD_HALF, "SWARM", Color(Gfx.C_SWARM, 0.5 + 0.5 * sin(t * 10.0)), 16.0, 40.0)
+		_point_at(g.reaper_src.position, "REAPER STIRS", Color(MAG, 0.5 + 0.5 * sin(t * 6.0)), 16.0, 40.0)
+	if g.swarm_t < 12.0 and g.state == "playing" and g.swarm_src != null:
+		_point_at(g.swarm_src.position, "SWARM", Color(Gfx.C_SWARM, 0.5 + 0.5 * sin(t * 10.0)), 16.0, 40.0)
 	# visible hostiles
 	var shown := 0
 	for e in g.enemies:
@@ -487,10 +501,10 @@ class MiniTop extends Node2D:
 			var mp := h.world_to_mini(rp.position)
 			draw_arc(mp, 6.0 + 2.0 * sin(h.t * 6.0), 0, TAU, 16, Gfx.C_REAPER, 1.5, true)
 		var mr: Rect2 = h.minimap_rect()
-		if g.swarm_t < 12.0:
-			draw_circle(mr.get_center() + g.swarm_dir * (mr.size.x * 0.5 - 8.0), 4.0 + 2.0 * sin(h.t * 8.0), Color(Gfx.C_SWARM, 0.7))
+		if g.swarm_t < 12.0 and g.swarm_src != null:
+			draw_circle(h.world_to_mini(g.swarm_src.position), 4.0 + 2.0 * sin(h.t * 8.0), Color(Gfx.C_SWARM, 0.7))
 		if rp == null and g.reaper_t < 30.0:
-			draw_circle(mr.get_center() + g.reaper_dir * (mr.size.x * 0.5 - 8.0), 5.0 + 2.0 * sin(h.t * 6.0), Color(Gfx.C_REAPER, 0.7))
+			draw_circle(h.world_to_mini(g.reaper_src.position), 5.0 + 2.0 * sin(h.t * 6.0), Color(Gfx.C_REAPER, 0.7))
 		var p: Ship = g.player
 		if not p.dead:
 			var pp := h.world_to_mini(p.position)

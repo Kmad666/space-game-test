@@ -20,6 +20,11 @@ var layer_proj: Node2D
 var fx: FX
 var hive: Hive
 var fog: FogOfWar
+var cave: Cave
+var nests: Array = []
+var swarm_src: Field
+var reaper_src: Field
+var _wake_t := 0.0
 var player: Ship
 var camera: Camera2D
 var hud: HUD
@@ -113,15 +118,12 @@ func _ready() -> void:
 
 	await Gfx.build(self)
 
-	var bg := CanvasLayer.new()
-	bg.layer = -10
-	add_child(bg)
-	bg.add_child(Backdrop.new())
-
 	world = Node2D.new()
 	world.process_mode = Node.PROCESS_MODE_PAUSABLE
 	add_child(world)
-	world.add_child(WorldGrid.new())
+	cave = Cave.new()
+	cave.generate(rng.randi(), WORLD_HALF)
+	world.add_child(cave)
 	hive = Hive.new()
 	world.add_child(hive)
 	layer_res = _layer()
@@ -161,8 +163,8 @@ func _ready() -> void:
 	spawn_drone(false, brood.position)
 	spawn_drone(true, brood.position)
 	_make_fields()
-	swarm_dir = Vector2.RIGHT.rotated(rng.randf() * TAU)
-	reaper_dir = Vector2.RIGHT.rotated(rng.randf() * TAU)
+	swarm_src = _pick_nest()
+	reaper_src = nests[rng.randi() % nests.size()]
 	camera.position = player.position
 	fog.refresh()
 	if low_quality:
@@ -189,21 +191,37 @@ func _layer() -> Node2D:
 func _make_fields() -> void:
 	var kinds := ["nectar", "ore", "ice"]
 	kinds.shuffle()
-	var a0 := rng.randf() * TAU
-	for i in 3:
-		var a := a0 + TAU * i / 3.0 + rng.randf_range(-0.2, 0.2)
-		var f := Field.new()
-		world.add_child(f)
-		world.move_child(f, layer_res.get_index())
-		f.setup(kinds[i], 1, Vector2.RIGHT.rotated(a) * rng.randf_range(1800.0, 2050.0), rng.randi())
-		fields.append(f)
-	for i in 3:
-		var a := a0 + TAU * i / 3.0 + PI / 3.0 + rng.randf_range(-0.2, 0.2)
-		var f := Field.new()
-		world.add_child(f)
-		world.move_child(f, layer_res.get_index())
-		f.setup(kinds[(i + 2) % 3], 2, Vector2.RIGHT.rotated(a) * rng.randf_range(3050.0, 3350.0), rng.randi())
-		fields.append(f)
+	for c in cave.chambers:
+		var f: Field = null
+		match c.kind:
+			"field1":
+				f = Field.new()
+				world.add_child(f)
+				world.move_child(f, layer_res.get_index())
+				f.setup(kinds[c.slot], 1, c.pos, rng.randi(), c.r)
+			"field2":
+				f = Field.new()
+				world.add_child(f)
+				world.move_child(f, layer_res.get_index())
+				f.setup(kinds[(c.slot + 2) % 3], 2, c.pos, rng.randi(), c.r)
+			"nest":
+				f = Field.new()
+				world.add_child(f)
+				world.move_child(f, layer_res.get_index())
+				f.setup("nest", 2, c.pos, rng.randi(), c.r, c.slot)
+				nests.append(f)
+		if f != null:
+			fields.append(f)
+
+
+func _pick_nest() -> Field:
+	var live := []
+	for n in nests:
+		if not n.dormant():
+			live.append(n)
+	if live.is_empty():
+		return null
+	return live[rng.randi() % live.size()]
 
 
 func start_game() -> void:
@@ -268,28 +286,33 @@ func spawn_glob(kind: String, amt: float, pos: Vector2) -> void:
 
 
 func spawn_swarm() -> void:
+	if swarm_src == null or swarm_src.dormant():
+		swarm_src = _pick_nest()
+	if swarm_src == null:
+		swarm_t = 20.0
+		swarm_warned = false
+		return
 	swarm_wave += 1
-	var center := swarm_dir * (WORLD_HALF - 120.0)
 	var n := mini(4 + swarm_wave, 16)
 	for i in n:
-		spawn_enemy("swarm", center + Vector2(rng.randf_range(-260, 260), rng.randf_range(-260, 260)), null)
-	hud.push_message("A SWARM DESCENDS FROM THE %s!" % compass(swarm_dir), Color(1, 0.55, 0.3), 3.5)
+		spawn_enemy("swarm", swarm_src.position + Vector2.RIGHT.rotated(rng.randf() * TAU) * rng.randf_range(80.0, 220.0), null)
+	hud.push_message("A SWARM POURS OUT OF %s!" % swarm_src.field_name, Color(1, 0.55, 0.3), 3.5)
 	shake = maxf(shake, 5.0)
-	swarm_t = rng.randf_range(55.0, 75.0)
-	swarm_dir = Vector2.RIGHT.rotated(rng.randf() * TAU)
+	swarm_t = rng.randf_range(60.0, 80.0)
+	swarm_src = _pick_nest()
 	swarm_warned = false
 
 
 func spawn_reaper() -> void:
 	var r := Reaper.new()
-	r.setup(reaper_dir * (WORLD_HALF + 80.0), reaper_n)
+	r.setup(reaper_src.position, reaper_n)
 	layer_enemies.add_child(r)
 	enemies.append(r)
 	reaper_n += 1
 	hud.push_message("THE REAPER HAS COME FOR THE STORES", Color(1, 0.4, 0.85), 4.0)
 	shake = maxf(shake, 8.0)
 	reaper_t = rng.randf_range(220.0, 270.0)
-	reaper_dir = Vector2.RIGHT.rotated(rng.randf() * TAU)
+	reaper_src = nests[rng.randi() % nests.size()]
 	reaper_warned = false
 
 
@@ -353,6 +376,9 @@ func on_hive_grew(label: String, _tp: String, where: Vector2) -> void:
 
 
 func on_field_discovered(f: Field) -> void:
+	if f.kind == "nest":
+		hud.push_message("FOUND %s — A RIVAL HIVE. KILL ITS CORE TO SILENCE ITS SWARMS" % f.field_name, Gfx.C_FOE, 4.0)
+		return
 	hud.push_message("DISCOVERED %s — %s" % [f.field_name.to_upper(), f.kind.to_upper()], Color(f.color, 1.0), 3.0)
 
 
@@ -390,16 +416,16 @@ func _process(delta: float) -> void:
 		time_played += delta
 		if state == "playing":
 			swarm_t -= delta
-			if swarm_t < 12.0 and not swarm_warned:
+			if swarm_t < 12.0 and not swarm_warned and swarm_src != null:
 				swarm_warned = true
-				hud.push_message("SWARM SIGHTED TO THE %s" % compass(swarm_dir), Color(1, 0.6, 0.35), 3.0)
+				hud.push_message("A SWARM STIRS IN %s" % swarm_src.field_name, Color(1, 0.6, 0.35), 3.0)
 			if swarm_t <= 0.0:
 				spawn_swarm()
 			if reaper_alive() == null:
 				reaper_t -= delta
 				if reaper_t < 30.0 and not reaper_warned:
 					reaper_warned = true
-					hud.push_message("A REAPER STIRS IN THE DARK TO THE %s…" % compass(reaper_dir), Color(1, 0.45, 0.85), 4.0)
+					hud.push_message("A REAPER STIRS DEEP IN %s…" % reaper_src.field_name, Color(1, 0.45, 0.85), 4.0)
 				if reaper_t <= 0.0:
 					spawn_reaper()
 		if state == "dying":
@@ -411,6 +437,11 @@ func _process(delta: float) -> void:
 					print("GAME OVER reached at t=%d" % int(time_played))
 		if autopilot and state == "playing":
 			_autotest_tick()
+		_wake_t -= delta
+		if _wake_t <= 0.0:
+			_wake_t = 0.5
+			for f in fields:
+				f.set_awake(player.position.distance_to(f.position) < f.radius + 1500.0)
 	if bench:
 		_bench_tick()
 	if title_shot and real_t > 1.5:
@@ -531,6 +562,11 @@ func _autotest_tick() -> void:
 				var key: String = "%s:%s:%s" % [a.role, a.ai_state, a.ai_field.kind if a.ai_field != null else "-"]
 				st[key] = st.get(key, 0) + 1
 			var rp = reaper_alive()
+			for a in allies:
+				if a.ai_field != null and a.ai_field.kind == "ore":
+					print("     ore-agent ", a.role, " ", a.ai_state, " pos=", a.position.round(), " field=", a.ai_field.position.round(), " tier=", a.ai_field.tier, " nav=", a.nav_pt.round(), " cargo=", int(a.cargo_total()), " hp=", int(a.hp))
+			print("   plan_i=", hive.plan_i, " spent=", hive.plan_spent, " cost=", hive.plan_cost(hive.plan_i), " ore=", hive.stores.ore, " stall=", hive.build_stall, " forge_hp=", hive.modules.forge.hp, " lvl=", hive.modules.forge.level)
+			print("   delivered=", hive.delivered, " fields=", fields.map(func(f): return [f.kind, f.tier, f.position.round(), f.node_count()]))
 			print("   states=", st, " pcargo=", player.cargo, " ppos=", player.position.round(), " globs=", globs.size(), " reaper=", rp.state if rp != null else "none", " nodes=", res_nodes.size(), " stall=", hive.build_stall)
 
 
@@ -543,11 +579,10 @@ func _bench_setup() -> void:
 	for i in 3:
 		hive.spires[i].set_level(1)
 	swarm_wave = 4
-	swarm_dir = Vector2(1, 0.4).normalized()
 	spawn_swarm()
 	for e in enemies:
 		if e.kind == "swarm":
-			e.position = e.position * 0.35
+			e.position = Vector2.RIGHT.rotated(randf() * TAU) * randf_range(300.0, 600.0)
 
 
 func _bench_tick() -> void:

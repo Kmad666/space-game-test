@@ -11,6 +11,7 @@ const NAMES := {
 	"ice": ["Khione Shelf", "Boreas Shelf"],
 }
 const GUARD := {"nectar": "polyp", "ore": "spitter", "ice": "lurker"}
+const NEST_NAMES := ["VESPA BURROW", "TARTARUS BURROW", "EREBUS BURROW"]
 
 var kind := "nectar"
 var tier := 1
@@ -21,20 +22,38 @@ var node_target := 9
 var regrow: Array = []
 var slots: Array = []  # {kind, home, enemy, t}
 var discovered := false
+var awake := true
+var danger := 0.0
+var nest_slot := -1
 var rng := RandomNumberGenerator.new()
 var _aura: Sprite2D
 
 
-func setup(k: String, t: int, pos: Vector2, seed_v: int) -> void:
+func setup(k: String, t: int, pos: Vector2, seed_v: int, r: float, idx := 0) -> void:
 	kind = k
 	tier = t
 	position = pos
 	rng.seed = seed_v
+	radius = r
+	z_index = -2
+	if k == "nest":
+		color = Gfx.C_FOE
+		field_name = NEST_NAMES[idx % NEST_NAMES.size()]
+		node_target = 0
+		_aura = Gfx.sprite("blob", Color(color, 0.22))
+		_aura.scale = Vector2.ONE * (radius * 1.2 / 128.0)
+		add_child(_aura)
+		slots.append({"kind": "nestcore", "home": position, "enemy": null, "t": 0.0})
+		for i in 3:
+			var home := position + Vector2.RIGHT.rotated(TAU * i / 3.0 + rng.randf() * 0.5) * radius * 0.6
+			slots.append({"kind": "spitter" if i < 2 else "polyp", "home": home, "enemy": null, "t": 0.0})
+		tier = 2
+		for i in slots.size():
+			_spawn_guardian(i)
+		return
 	color = Gfx.res_color(k)
-	radius = 430.0 if tier == 1 else 540.0
 	node_target = 9 if tier == 1 else 13
 	field_name = NAMES[k][tier - 1]
-	z_index = -2
 	_aura = Gfx.sprite("blob", Color(color, 0.18))
 	_aura.scale = Vector2.ONE * (radius * 1.25 / 128.0)
 	add_child(_aura)
@@ -103,6 +122,11 @@ func _spawn_guardian(i: int) -> void:
 	var e: Enemy = Game.inst.spawn_enemy(s.kind, s.home, self)
 	e.slot = i
 	s.enemy = e
+	if not awake:
+		e.process_mode = Node.PROCESS_MODE_DISABLED
+		e.visible = false
+	if s.kind == "nestcore" and Game.inst.state == "playing":
+		Game.inst.hud.push_message("%s HAS REGROWN ITS CORE" % field_name, Gfx.C_FOE, 3.0)
 
 
 func on_guardian_died(i: int) -> void:
@@ -111,6 +135,30 @@ func on_guardian_died(i: int) -> void:
 	var s: Dictionary = slots[i]
 	s.enemy = null
 	s.t = rng.randf_range(70.0, 100.0) if s.kind != "lurker" else rng.randf_range(55.0, 80.0)
+	if s.kind == "nestcore":
+		s.t = 240.0
+		Game.inst.hud.push_message("%s SILENCED — NO SWARMS FROM IT FOR A WHILE" % field_name, Color(1, 0.8, 0.4), 4.0)
+
+
+## A rival burrow with its core alive sends swarms; a silenced one doesn't.
+func dormant() -> bool:
+	return kind == "nest" and slots[0].enemy == null
+
+
+## Far-away zones sleep: their creatures freeze until the player comes near.
+func set_awake(on: bool) -> void:
+	if on == awake:
+		return
+	awake = on
+	var pm := Node.PROCESS_MODE_INHERIT if on else Node.PROCESS_MODE_DISABLED
+	for e in Game.inst.enemies:
+		if e.field == self:
+			e.process_mode = pm
+			if not on:
+				e.visible = false
+	for nd in Game.inst.res_nodes:
+		if nd.field == self:
+			nd.process_mode = pm
 
 
 ## Rough danger rating used by forager drones to pick where to go.
@@ -126,6 +174,7 @@ func threat() -> float:
 
 
 func _process(delta: float) -> void:
+	danger = maxf(0.0, danger - delta)
 	var i := 0
 	while i < regrow.size():
 		regrow[i] -= delta

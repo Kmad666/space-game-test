@@ -4,10 +4,10 @@ extends Node2D
 ## Comb Forge's automatic growth plan, the Brood Chamber's hatching, and the
 ## Heart's vitality (the run ends if the Heart withers from starvation).
 
-const CORE_R := 480.0
-const GLAND_R := 880.0
-const SPIRE_R := 1200.0
-const ZONE_R := 1400.0
+const CORE_R := 260.0
+const GLAND_R := 430.0
+const SPIRE_R := 555.0
+const ZONE_R := 650.0
 const CORE_ANG := {"vault": -45.0, "cistern": 45.0, "forge": 135.0, "brood": 225.0}
 const GLAND_ANG := {"proboscis": 0.0, "pouch": 60.0, "carapace": 120.0, "venom": 180.0, "wing": 240.0, "eye": 300.0}
 const SPIRE_ORDER := [0, 4, 2, 6, 1, 5, 3, 7]
@@ -21,7 +21,7 @@ const PLAN := [
 	["brood", 5], ["cistern", 4], ["forge", 4], ["eye", 4], ["spires", 3],
 ]
 
-var stores := {"nectar": 170.0, "ore": 40.0, "ice": 70.0}
+var stores := {"nectar": 230.0, "ore": 60.0, "ice": 70.0}
 var delivered := {"nectar": 0.0, "ore": 0.0, "ice": 0.0}
 var modules := {}  # type -> HiveModule (not spires)
 var spires: Array = []
@@ -156,7 +156,7 @@ func drone_count() -> int:
 
 
 func upkeep() -> float:
-	return 0.25 + 0.015 * total_levels() + 0.02 * maxi(drone_count(), 0)
+	return 0.15 + 0.012 * total_levels() + 0.015 * maxi(drone_count(), 0)
 
 
 # ---------------------------------------------------------------- augments
@@ -265,7 +265,7 @@ func _process(delta: float) -> void:
 		if not starving:
 			starving = true
 			g.hud.push_message("THE HIVE IS STARVING — BRING NECTAR TO THE VAULT!", Color(1, 0.35, 0.3), 4.0)
-		vitality -= delta / 75.0
+		vitality -= delta / 100.0
 		for m in built_modules():
 			if m.hp > 1.0:
 				m.hp -= 0.5 * delta
@@ -313,7 +313,7 @@ func _grow(delta: float) -> void:
 	var cost := plan_cost(plan_i)
 	var spend := minf(minf(rate * delta, stores.ore), cost - plan_spent)
 	stores.ore -= spend
-	stores.nectar -= spend * 0.25
+	stores.nectar -= spend * 0.1
 	plan_spent += spend
 	building_active = true
 	var tm := _plan_target()
@@ -331,7 +331,7 @@ func _hatch(delta: float) -> void:
 	hatch_t += delta * brood.efficiency() * (0.7 + 0.3 * brood.level)
 	if hatch_t >= 10.0:
 		hatch_t = 0.0
-		stores.nectar -= 20.0
+		stores.nectar -= 15.0
 		var guards := 0
 		for a in g.allies:
 			if a.role == "guard":

@@ -40,6 +40,10 @@ func _process(delta: float) -> void:
 	life -= delta
 	vel *= exp(-1.2 * delta)
 	position += vel * delta
+	var c := g.cave.constrain(position, 14.0)
+	if c != position:
+		position = c
+		vel = Vector2.ZERO
 	var s := 0.9 + 0.15 * sin(t * 4.0)
 	_d.scale = Vector2.ONE * s
 	if life < 10.0:

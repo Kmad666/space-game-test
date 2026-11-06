@@ -28,6 +28,10 @@ func _process(delta: float) -> void:
 		queue_free()
 		return
 	position += vel * delta
+	if not g.cave.inside(position, 0.0):
+		g.fx.burst(position, col, 4, 80.0, 1.6, 0.3)
+		queue_free()
+		return
 	visible = g.fog.is_seen(position)
 	for a in g.allies:
 		if a.dead:

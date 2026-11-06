@@ -38,6 +38,9 @@ func _process(delta: float) -> void:
 	vel = vel.normalized() * speed
 	position += vel * delta
 	rotation = vel.angle()
+	if not g.cave.inside(position, 0.0):
+		_explode()
+		return
 	trail.append(position)
 	if trail.size() > (7 if g.low_quality else 13):
 		trail.remove_at(0)

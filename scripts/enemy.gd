@@ -40,6 +40,8 @@ var dash_dir := Vector2.ZERO
 var dash_hit := false
 var orbit := 1.0
 var reward := 1
+var nav_t := 0.0
+var nav_pt := Vector2.ZERO
 
 var _body: Sprite2D
 var _veins: Sprite2D
@@ -53,7 +55,7 @@ func setup(k: String, pos: Vector2, f, wave: int) -> void:
 	home = pos
 	wander = pos
 	tier = f.tier if f != null else 1
-	tm = 1.0 if tier == 1 else 1.55
+	tm = 0.85 if tier == 1 else 1.45
 	t = randf() * 5.0
 	orbit = 1.0 if randf() < 0.5 else -1.0
 	fire_cd = randf_range(0.6, 1.6)
@@ -88,6 +90,12 @@ func setup(k: String, pos: Vector2, f, wave: int) -> void:
 				add_child(fn)
 				_parts.append([fn, 0.0, 0.0, "fin%d" % int(sd)])
 			_body = Gfx.sprite("lurker")
+		"nestcore":
+			hp = 1500.0 * tm
+			hit_radius = 62.0
+			reward = 10
+			rotation = randf() * TAU
+			_body = Gfx.sprite("nest")
 		"spitter":
 			hp = 150.0 * tm
 			hit_radius = 22.0
@@ -125,7 +133,7 @@ func _intruder(rng_max: float):
 	for a in g.allies:
 		if a.dead or not _zone_ok(a.position):
 			continue
-		var d: float = position.distance_to(a.position)
+		var d: float = position.distance_to(a.position) * (1.0 if a.is_player else 1.5)
 		if d < bd:
 			bd = d
 			best = a
@@ -148,9 +156,22 @@ func _process(delta: float) -> void:
 			_spitter(delta)
 		"swarm":
 			_swarm(delta)
+		"nestcore":
+			_nestcore(delta)
 	if dead:
 		return
 	position += vel * delta
+	if kind == "mite" or kind == "lurker" or kind == "swarm":
+		var c := g.cave.constrain(position, hit_radius * 0.6)
+		if c != position:
+			var nrm := (c - position).normalized()
+			var vn := vel.dot(nrm)
+			if vn < 0.0:
+				vel -= nrm * vn
+			position = c
+			if kind == "lurker" and state == "dash":
+				state = "recover"
+				state_t = 1.0
 	_update_visuals()
 	visible = g.fog.is_seen(position)
 
@@ -331,7 +352,12 @@ func _swarm(delta: float) -> void:
 	var d: Vector2 = target.position - position
 	var dist := d.length()
 	if dist > tr + 40.0:
-		vel = vel.lerp(d / dist * speed, 1.0 - exp(-3.0 * delta))
+		nav_t -= delta
+		if nav_t <= 0.0 or position.distance_to(nav_pt) < 50.0:
+			nav_t = 0.4
+			nav_pt = g.cave.steer(position, target.position)
+		var nd := nav_pt - position
+		vel = vel.lerp(nd.normalized() * speed, 1.0 - exp(-3.0 * delta))
 	else:
 		var tang := d.orthogonal().normalized() * orbit
 		var radial := d / maxf(dist, 1.0) * clampf((dist - tr) / 30.0, -1.0, 1.0)
@@ -344,6 +370,23 @@ func _swarm(delta: float) -> void:
 				target.damage(2.0 * mult)
 			g.fx.burst(position + d * 0.6, color, 3, 70.0, 1.5, 0.25)
 	_face(vel, delta, 10.0)
+
+
+func _nestcore(delta: float) -> void:
+	var g := Game.inst
+	vel = Vector2.ZERO
+	rotation += 0.1 * delta
+	think_t -= delta
+	if think_t <= 0.0:
+		think_t = 0.3
+		target = _intruder(540.0)
+	fire_cd -= delta
+	if target != null and is_instance_valid(target) and not target.dead and fire_cd <= 0.0:
+		fire_cd = 2.2
+		var aim: Vector2 = (target.position + target.vel * 0.3 - position).normalized()
+		for s in [-0.4, -0.2, 0.0, 0.2, 0.4]:
+			var dir := aim.rotated(s)
+			g.spawn_bolt(position + dir * 60.0, dir * 240.0, 8.0, color, "spore", 6.0)
 
 
 func _pick_module():
@@ -383,6 +426,8 @@ func die(by_player: bool) -> void:
 			sc = 2.0
 		"lurker", "spitter":
 			sc = 1.5
+		"nestcore":
+			sc = 3.5
 		"mite", "swarm":
 			sc = 0.7
 	g.fx.explosion(position, color, sc)
